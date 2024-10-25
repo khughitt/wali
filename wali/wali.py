@@ -3,6 +3,14 @@ wali class def
 """
 import os
 import sqlite3
+from enum import StrEnum
+
+class WaliVote(StrEnum):
+    ok = "ok"
+    newp = "newp"
+    yesh = "yesh"
+    fav = "fav"
+    never = "never"
 
 class Wali:
     def __init__(self, image_dir:str, db_path:str):
@@ -12,8 +20,13 @@ class Wali:
         self._scan_images()
 
     def _init_db(self, db_path:str):
+        """
+        Initializes existing database or creates a new sqlite db if none found
+        """
+        db_dir = os.path.dirname(db_path)
 
-        os.makedirs(os.path.dirname(db_path), mode=0o755, exist_ok=True)
+        if not os.path.exists(db_dir):
+            os.makedirs(db_dir, mode=0o755, exist_ok=True)
 
         db_exists = os.path.exists(db_path)
 
@@ -47,7 +60,7 @@ class Wali:
 
             return path
     
-    def add_rating(self, path:str, vote:int):
+    def add_rating(self, path:str, vote:WaliVote):
         cur = self.db.cursor()
         cur.execute("""
             INSERT INTO ratings (image_id, vote)
@@ -65,9 +78,9 @@ class Wali:
         """
         Creates new db
         """
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-
         cur = self.db.cursor()
+
+        sql = "CREATE TYPE vote AS ENUM ('ok', 'yesh', 'newp', 'fav', 'never');"
 
         # create images table
         cur.execute("""
@@ -84,13 +97,11 @@ class Wali:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 image_id INTEGER NOT NULL,
                 time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                vote BOOLEAN NOT NULL DEFAULT 1,
+                vote vote NOT NULL DEFAULT 'ok',
                 FOREIGN KEY (image_id) REFERENCES images (id)
             )
         """)
-
         self.db.commit()
-
 
     def _scan_images(self) -> None:
         known_images = self._get_known_images()
