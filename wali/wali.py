@@ -17,6 +17,7 @@ class Wali:
         self.image_dir = image_dir
         self.images: list[str] = []
         self._init_db(db_path)
+
         self._scan_images()
 
     def _init_db(self, db_path:str):

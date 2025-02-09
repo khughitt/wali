@@ -3,6 +3,7 @@ wali cli
 """
 import os
 import click
+import sys
 import subprocess
 from wali import Wali, WaliVote
 
