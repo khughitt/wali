@@ -34,8 +34,14 @@ def cli(ctx, image_dir:str, db_path:str):
 @click.argument('rating', type=str, default='o')
 @click.option('--backend', type=click.Choice(['haishoku', 'wal', 'colorz', 'colorthief', 'schemer2']), 
               default='haishoku', help="Backend to use for color extraction")
+@click.option("--seasons",
+              help="Sample dates close to current date",
+              default=False)
+@click.option("--file",
+              help="Specific wallpaper file path to use instead of random selection",
+              type=click.Path(exists=True))
 @click.pass_obj
-def change(wali, rating:str, backend:str):
+def change(wali, rating:str, backend:str, seasons:bool, file:str):
     """
     Change wallpaper.
 
@@ -46,6 +52,7 @@ def change(wali, rating:str, backend:str):
 
       wali --image-dir="~/wallpapers" change y
       wali --image-dir="~/wallpapers" change n
+      wali --image-dir="~/wallpapers" change --file="/path/to/wallpaper.jpg"
 
     Ratings:
 
@@ -77,8 +84,8 @@ def change(wali, rating:str, backend:str):
 
     wali.add_rating(current_wp, vote_opts[rating])
 
-    # choose new wallpaper
-    new_wallpaper = wali.choose_wallpaper()
+    # choose new wallpaper - either specified file or random selection
+    new_wallpaper = file if file else wali.choose_wallpaper(seasons)
 
     # run pywal
     # alt approach: https://github.com/dylanaraps/pywal/wiki/Using-%60pywal%60-as-a-module

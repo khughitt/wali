@@ -4,6 +4,10 @@ wali class def
 import os
 import sqlite3
 from enum import StrEnum
+from datetime import datetime
+from PIL import Image
+from PIL.ExifTags import TAGS
+import re
 
 class WaliVote(StrEnum):
     ok = "ok"
@@ -37,12 +41,43 @@ class Wali:
             print("Creating new database...")
             self._create_db(db_path)
 
-    def choose_wallpaper(self) -> str:
-        sql = """SELECT path FROM images ORDER BY RANDOM() LIMIT 1"""
-
+    def choose_wallpaper(self, seasons:bool) -> str:
+        if not seasons:
+            sql = """SELECT path FROM images ORDER BY RANDOM() LIMIT 1"""
+            cur = self.db.cursor()
+            cur.execute(sql)
+            return cur.fetchone()[0]
+        
+        # Get current day of year
+        current_date = datetime.now()
+        current_day_of_year = current_date.timetuple().tm_yday
+        
+        # Calculate weights based on day of year difference
+        # We use a Gaussian-like weighting function where images closer to current date
+        # have higher weights. The standard deviation is set to 30 days.
+        sql = """
+        WITH weighted_images AS (
+            SELECT 
+                path,
+                ABS(julianday(date) - julianday('now')) as day_diff,
+                EXP(-(ABS(julianday(date) - julianday('now')) * ABS(julianday(date) - julianday('now'))) / (2 * 30 * 30)) as weight
+            FROM images
+            WHERE date IS NOT NULL
+        )
+        SELECT path
+        FROM weighted_images
+        ORDER BY weight * RANDOM() DESC
+        LIMIT 1
+        """
+        
         cur = self.db.cursor()
         cur.execute(sql)
-        return cur.fetchone()[0]
+        result = cur.fetchone()
+        if result is None:
+            # Fallback to random selection if no dated images found
+            cur.execute("SELECT path FROM images ORDER BY RANDOM() LIMIT 1")
+            result = cur.fetchone()
+        return result[0]
     
     def get_current_wallpaper(self) -> str:
         """
@@ -81,14 +116,15 @@ class Wali:
         """
         cur = self.db.cursor()
 
-        sql = "CREATE TYPE vote AS ENUM ('ok', 'yesh', 'newp', 'fav', 'never');"
+        cur.execute("CREATE TYPE vote AS ENUM ('ok', 'yesh', 'newp', 'fav', 'never');")
 
         # create images table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS images (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 path TEXT NOT NULL,
-                exclude BOOLEAN NOT NULL DEFAULT 0
+                exclude BOOLEAN NOT NULL DEFAULT 0,
+                timestamp DATETIME
             )
         """)
 
@@ -108,6 +144,22 @@ class Wali:
         known_images = self._get_known_images()
 
         cur = self.db.cursor()
+        
+        def extract_timestamp_from_exif(image_path):
+            try:
+                with Image.open(image_path) as img:
+                    exif = img._getexif()
+                    if exif is None:
+                        return None
+                    
+                    for tag_id in exif:
+                        tag = TAGS.get(tag_id, tag_id)
+                        if tag == 'DateTimeOriginal':
+                            date_str = exif[tag_id]
+                            return datetime.strptime(date_str, '%Y:%m:%d %H:%M:%S')
+            except Exception:
+                return None
+            return None
 
         for root, dirs, files in os.walk(self.image_dir):
             for file in files:
@@ -116,7 +168,16 @@ class Wali:
 
                     if full_path not in known_images:
                         print(f"Adding {full_path}...")
-                        sql = """INSERT INTO images (path) VALUES (?)"""
-                        cur.execute(sql, (full_path,))
+                        
+                        # Try to extract timestamp from EXIF first
+                        timestamp = extract_timestamp_from_exif(full_path)
+                        
+                        # If no EXIF timestamp, try filename
+                        if timestamp is None:
+                            print(f"No EXIF timestamp found for {full_path}, using current timestamp")
+                            timestamp = datetime.now()
+                        
+                        sql = """INSERT INTO images (path, timestamp) VALUES (?, ?)"""
+                        cur.execute(sql, (full_path, timestamp))
 
         self.db.commit()
