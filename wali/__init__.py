@@ -1,1 +1,1 @@
-from .wali import Wali, WaliVote
+from .wali import Wali as Wali, WaliVote as WaliVote

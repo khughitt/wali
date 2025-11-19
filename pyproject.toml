@@ -1,21 +1,20 @@
-[tool.poetry]
+[project]
 name = "wali"
 version = "0.1.0"
 description = "Wallpaper switcher"
-authors = ["Keith Hughitt"]
-license = "MIT"
+authors = [{ name = "Keith Hughitt" }]
+license = { text = "MIT" }
 readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.1.7",
+    "haishoku>=1.1.8",
+    "Pillow>=10.2.0",
+]
 
-[tool.poetry.dependencies]
-python = "^3.12"
-click = "^8.1.7"
-haishoku = "^1.1.8"
-Pillow = "^10.2.0"
-
+[project.scripts]
+wali = "wali.cli:run"
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
-
-[tool.poetry.scripts]
-wali = "wali.cli:run"
+requires = ["hatchling"]
+build-backend = "hatchling.build"

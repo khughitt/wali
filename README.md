@@ -30,27 +30,38 @@ priority given to wallpapers / time ranges with favorable ratings.
 
 # Install
 
-```
+```bash
 git clone https://github.com/khughitt/wali
-```
-
-```
 cd wali
-poetry install
+uv sync
 ```
 
 Add an environmental variable in `~/.zshenv` or some other place sourced by your shell indicating
 the base directory with the images you want to use:
 
-```
+```bash
 export WALI_DIR='/path/to/images'
 ```
 
 # Usage
 
+Basic usage (X11 with feh):
+```bash
+alias wali="cd ~/software/wali/ && uv run wali --image-dir=\"$WALI_DIR\" change"
+wali
 ```
-alias wali="cd ~/software/wali/ && poetry run wali --image-dir=\"$WALI_DIR\" change"
+
+For Wayland with swww:
+```bash
+alias wali="cd ~/software/wali/ && uv run wali --wallpaper-backend swww --image-dir=\"$WALI_DIR\" change"
 wali
 ```
 
 Modify the "~/software/wali" path to indicate the directory you cloned wali to.
+
+## Options
+
+- `--wallpaper-backend`: Choose between `feh` (default, X11) or `swww` (Wayland)
+- `--backend`: Color extraction backend (haishoku, wal, colorz, colorthief, schemer2)
+- `--seasons`: Sample wallpapers with dates close to the current date
+- `--file`: Specify a particular wallpaper file instead of random selection

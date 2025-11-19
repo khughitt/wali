@@ -1,6 +1,7 @@
 """
 wali cli
 """
+
 import os
 import click
 import sys
@@ -9,39 +10,56 @@ from wali import Wali, WaliVote
 
 
 @click.group()
-@click.option("--image-dir", 
-              help="Top-level directory to scan for images",
-              required=True)
-@click.option("--db-path", 
-              help="Path to sqlite database (default: $XDG_CONFIG_HOME/wali/wali.db)",
-              default="$XDG_CONFIG_HOME/wali/wali.db",
-              required=True)
+@click.option(
+    "--image-dir",
+    help="Top-level directory to scan for images (default: $WALI_IMAGE_DIR)",
+    default="$WALI_IMAGE_DIR",
+)
+@click.option(
+    "--db-path",
+    help="Path to sqlite database (default: $XDG_CONFIG_HOME/wali/wali.db)",
+    default="$XDG_CONFIG_HOME/wali/wali.db",
+)
+@click.option(
+    "--wallpaper-backend",
+    type=click.Choice(["feh", "swww"]),
+    default="feh",
+    help="Backend to use for setting wallpapers (default: feh)",
+)
 @click.pass_context
-def cli(ctx, image_dir:str, db_path:str):
+def cli(ctx, image_dir: str, db_path: str, wallpaper_backend: str):
     """Initialize CLI"""
-    if image_dir is None:
-        raise click.UsageError("Image directory is required")
-
-    if db_path is None:
-        raise click.UsageError("Database path is required")
-    
     image_dir = os.path.expandvars(os.path.expanduser(image_dir))
     db_path = os.path.expandvars(os.path.expanduser(db_path))
 
-    ctx.obj = Wali(image_dir, db_path=db_path)
+    # check to make sure valid image directory provided
+    if not os.path.isdir(image_dir):
+        raise click.UsageError(
+            f"Image directory {image_dir} does not exist. Please provide a valid image directory."
+        )
+
+    ctx.obj = {
+        "wali": Wali(image_dir, db_path=db_path, wallpaper_backend=wallpaper_backend),
+        "wallpaper_backend": wallpaper_backend,
+    }
+
 
 @cli.command
-@click.argument('rating', type=str, default='o')
-@click.option('--backend', type=click.Choice(['haishoku', 'wal', 'colorz', 'colorthief', 'schemer2']), 
-              default='haishoku', help="Backend to use for color extraction")
-@click.option("--seasons",
-              help="Sample dates close to current date",
-              default=False)
-@click.option("--file",
-              help="Specific wallpaper file path to use instead of random selection",
-              type=click.Path(exists=True))
+@click.argument("rating", type=str, default="o")
+@click.option(
+    "--backend",
+    type=click.Choice(["haishoku", "wal", "colorz", "colorthief", "schemer2"]),
+    default="haishoku",
+    help="Backend to use for color extraction",
+)
+@click.option("--seasons", help="Sample dates close to current date", default=False)
+@click.option(
+    "--file",
+    help="Specific wallpaper file path to use instead of random selection",
+    type=click.Path(exists=True),
+)
 @click.pass_obj
-def change(wali, rating:str, backend:str, seasons:bool, file:str):
+def change(ctx_obj, rating: str, backend: str, seasons: bool, file: str):
     """
     Change wallpaper.
 
@@ -63,7 +81,10 @@ def change(wali, rating:str, backend:str, seasons:bool, file:str):
     o   "ok" (default)
 
     If no rating is specified, a neutral default ('ok') is used.
-    """ 
+    """
+    wali = ctx_obj["wali"]
+    wallpaper_backend = ctx_obj["wallpaper_backend"]
+
     # get current bg
     current_wp = wali.get_current_wallpaper()
 
@@ -71,11 +92,11 @@ def change(wali, rating:str, backend:str, seasons:bool, file:str):
 
     # check to make sure rating option specified is valid
     vote_opts = {
-        'o': WaliVote.ok,
-        'n': WaliVote.newp,
-        'y': WaliVote.yesh,
-        'Y': WaliVote.fav,
-        'N': WaliVote.never
+        "o": WaliVote.ok,
+        "n": WaliVote.newp,
+        "y": WaliVote.yesh,
+        "Y": WaliVote.fav,
+        "N": WaliVote.never,
     }
 
     if rating not in vote_opts.keys():
@@ -87,10 +108,13 @@ def change(wali, rating:str, backend:str, seasons:bool, file:str):
     # choose new wallpaper - either specified file or random selection
     new_wallpaper = file if file else wali.choose_wallpaper(seasons)
 
-    # run pywal
-    # alt approach: https://github.com/dylanaraps/pywal/wiki/Using-%60pywal%60-as-a-module
+    # set wallpaper using selected backend
+    wali.set_wallpaper(new_wallpaper, wallpaper_backend)
+
+    # run pywal for color extraction
     print(["wal", "-i", new_wallpaper, "--backend", backend])
     subprocess.run(["wal", "-i", new_wallpaper, "--backend", backend])
+
 
 def run():
     """Initialize and run CLI"""
