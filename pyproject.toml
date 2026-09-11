@@ -1,20 +1,28 @@
 [project]
 name = "wali"
-version = "0.1.0"
-description = "Wallpaper switcher"
+version = "1.0.0"
+description = "Wallpaper selection, history, and favorites on top of Noctalia v5"
 authors = [{ name = "Keith Hughitt" }]
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.12"
-dependencies = [
-    "click>=8.1.7",
-    "haishoku>=1.1.8",
-    "Pillow>=10.2.0",
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.11.0",
+  "pyright>=1.1.0",
 ]
 
-[project.scripts]
-wali = "wali.cli:run"
+[tool.pyright]
+include = [
+  "bin/walictl",
+  "tests/test_walictl.py",
+]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[tool.ruff]
+line-length = 120
+respect-gitignore = false
+include = ["pyproject.toml", "tests/**/*.py"]
+extend-include = ["bin/walictl"]
