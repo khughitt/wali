@@ -14,5 +14,7 @@ check:
 
 test:
     uv run --frozen pytest -q
+    @command -v lua >/dev/null || { echo 'lua is required for the Noctalia plugin tests' >&2; exit 127; }
+    lua integrations/noctalia-plugin/plugin_test.lua
 
 verify: check test
