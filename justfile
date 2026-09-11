@@ -10,10 +10,12 @@ setup:
 
 check:
     just --fmt --check --justfile justfile
+    zsh -n shell/wali.zsh tests/wali.zsh tests/tmp_cleanup.zsh
     tasks check
 
 test:
     uv run --frozen pytest -q
+    zsh tests/wali.zsh
     @command -v lua >/dev/null || { echo 'lua is required for the Noctalia plugin tests' >&2; exit 127; }
     lua integrations/noctalia-plugin/plugin_test.lua
 
