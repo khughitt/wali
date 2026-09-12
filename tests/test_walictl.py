@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+import fcntl
 import importlib.machinery
 import importlib.util
-import fcntl
 import io
 import json
 import subprocess
 import sys
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -289,9 +289,11 @@ def test_locked_times_out_while_another_holder_exists(walictl: ModuleType, tmp_p
     thread.start()
     try:
         assert acquired.wait(5)
-        with pytest.raises(walictl.WalictlError, match="timed out waiting for"):
-            with walictl.locked(lock, timeout=0.2):
-                pass
+        with (
+            pytest.raises(walictl.WalictlError, match="timed out waiting for"),
+            walictl.locked(lock, timeout=0.2),
+        ):
+            pass
     finally:
         release.set()
         thread.join(5)
@@ -303,7 +305,7 @@ def test_locked_times_out_while_another_holder_exists(walictl: ModuleType, tmp_p
 def test_utc_now_format(walictl: ModuleType) -> None:
     value = walictl.utc_now()
     assert value.endswith("Z") and len(value) == 20
-    datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
 
 
 def test_favorites_lock_lives_in_state_dir(walictl: ModuleType, env: dict[str, Path]) -> None:
@@ -721,9 +723,11 @@ def test_navigation_keeps_lock_during_wallpaper_set(
 
     def check_lock(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         if args[2] == "wallpaper-set":
-            with walictl.history_lock().open("a", encoding="utf-8") as handle:
-                with pytest.raises(BlockingIOError):
-                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with (
+                walictl.history_lock().open("a", encoding="utf-8") as handle,
+                pytest.raises(BlockingIOError),
+            ):
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return fake.run(args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", check_lock)
@@ -741,7 +745,7 @@ def test_symlinked_wallpaper_dir_does_not_duplicate_history(
     code, stdout, _ = run_cli(walictl, ["previous"])
     assert (code, stdout) == (0, "previous: PXL_20210608_111152739\n")
     history = load_history(walictl)
-    assert [e.id for e in history.entries][0] == "PXL_20210608_111152739" and len(history.entries) == 2
+    assert next(e.id for e in history.entries) == "PXL_20210608_111152739" and len(history.entries) == 2
     assert all(str(env["wallpapers"]) in e.path for e in history.entries)
 
 

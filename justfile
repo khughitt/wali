@@ -11,6 +11,7 @@ setup:
 check:
     just --fmt --check --justfile justfile
     zsh -n shell/wali.zsh tests/wali.zsh tests/tmp_cleanup.zsh
+    uv run --frozen ruff check
     tasks check
 
 test:
