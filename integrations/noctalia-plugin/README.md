@@ -4,7 +4,7 @@ A native Noctalia v5 plugin for previewing and managing Wali's current wallpaper
 
 ## Entries
 
-- Plugin API: `22`
+- Plugin API: `28`
 - Widget: `khughitt/wali-panel:widget`
 - Panel: `khughitt/wali-panel:panel`
 

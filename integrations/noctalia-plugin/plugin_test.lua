@@ -21,6 +21,8 @@ local commands = {
   random = { "walictl", "random" },
   favorite = { "walictl", "favorite" },
   edit = { "walictl", "edit" },
+  hide = { "walictl", "hide" },
+  hidden = { "walictl", "hidden", "--json" },
 }
 
 for action, expected in pairs(commands) do equal(Logic.commandFor(action), expected) end
@@ -36,6 +38,7 @@ local payload = {
   source_path = "/wall/source.jpg",
   variant_path = nil,
   favorite = true,
+  hidden = false,
   history = { cursor = 3, length = 4 },
 }
 equal(Logic.decodeCurrent("valid", function(text)
@@ -50,19 +53,19 @@ local invalid, invalidError = Logic.validateCurrent({ source_path = "/wall/sourc
 assert(invalid == nil and type(invalidError) == "string")
 
 for _, field in ipairs({ "date", "display_date", "source_path", "variant_path" }) do
-  local candidate = { ok = true, id = "x", path = "/p", favorite = false, history = { cursor = 0, length = 1 } }
+  local candidate = { ok = true, id = "x", path = "/p", favorite = false, hidden = false, history = { cursor = 0, length = 1 } }
   candidate[field] = 42
   invalid, invalidError = Logic.validateCurrent(candidate)
   assert(invalid == nil and type(invalidError) == "string" and invalidError:find(field, 1, true))
 end
 
 for _, field in ipairs({ "id", "path" }) do
-  local candidate = { ok = true, id = "x", path = "/p", favorite = false, history = { cursor = 0, length = 1 } }
+  local candidate = { ok = true, id = "x", path = "/p", favorite = false, hidden = false, history = { cursor = 0, length = 1 } }
   candidate[field] = nil
   invalid, invalidError = Logic.validateCurrent(candidate)
   assert(invalid == nil and type(invalidError) == "string" and invalidError:find(field, 1, true))
 end
-local invalidFavorite, favoriteError = Logic.validateCurrent({ ok = true, id = "x", path = "/p", favorite = "yes", history = { cursor = 0, length = 1 } })
+local invalidFavorite, favoriteError = Logic.validateCurrent({ ok = true, id = "x", path = "/p", favorite = "yes", hidden = false, history = { cursor = 0, length = 1 } })
 assert(invalidFavorite == nil and favoriteError:find("favorite", 1, true))
 
 for _, action in ipairs({ "previous", "next", "random", "favorite" }) do
@@ -95,13 +98,42 @@ assert(Logic.nextSamples(nil))
 equal(Logic.nextTooltip(payload), "Next: sample (l / →)")
 equal(Logic.nextTooltip({ ok = true, id = "x", path = "/p", favorite = false, history = { cursor = 1, length = 3 } }), "Next (l / →)")
 
-local noHistory, noHistoryError = Logic.validateCurrent({ ok = true, id = "x", path = "/p", favorite = false })
+equal(Logic.unhideCommand("PXL_1"), { "walictl", "unhide", "PXL_1" })
+assert(Logic.refreshAfter("hide"), "hide must refresh current metadata")
+local noHidden, noHiddenError = Logic.validateCurrent({ ok = true, id = "x", path = "/p", favorite = false, history = { cursor = 0, length = 1 } })
+assert(noHidden == nil and noHiddenError:find("hidden", 1, true), "hidden must be required")
+local badHidden, badHiddenError = Logic.validateCurrent({ ok = true, id = "x", path = "/p", favorite = false, hidden = "no", history = { cursor = 0, length = 1 } })
+assert(badHidden == nil and badHiddenError:find("hidden", 1, true))
+equal(Logic.hideGlyph(false), "eye-off")
+equal(Logic.hideGlyph(true), "eye")
+equal(Logic.hideTooltip(false), "Hide (x) · right-click: hidden list")
+equal(Logic.hideTooltip(true), "Restore (x)")
+
+local hiddenItems = {
+  { id = "PXL_20260101_000000000", added = "T", date = "2026-01-01", display_date = "January 1, 2026",
+    path = "/wall/a.jpg", source_path = nil, exists = true },
+  { id = "gone", added = "T", date = nil, display_date = nil, path = nil, source_path = nil, exists = false },
+}
+equal(Logic.decodeHidden("list", function(text)
+  assert(text == "list")
+  return { ok = true, hidden = hiddenItems }
+end), hiddenItems)
+local badList, badListError = Logic.decodeHidden("x", function() return { ok = true, hidden = "nope" } end)
+assert(badList == nil and badListError:find("hidden", 1, true))
+badList, badListError = Logic.decodeHidden("x", function() return { ok = true, hidden = { { id = 5 } } } end)
+assert(badList == nil and badListError:find("id", 1, true))
+badList, badListError = Logic.decodeHidden("x", function() return { ok = false } end)
+assert(badList == nil and badListError:find("failure", 1, true))
+badList, badListError = Logic.decodeHidden("x", function() error("invalid JSON") end)
+assert(badList == nil and badListError:find("invalid JSON", 1, true))
+
+local noHistory, noHistoryError = Logic.validateCurrent({ ok = true, id = "x", path = "/p", favorite = false, hidden = false })
 assert(noHistory == nil and noHistoryError:find("history", 1, true), "history must be required")
 for _, history in ipairs({ { cursor = "0", length = 1 }, { cursor = 0, length = "1" }, { cursor = 0 }, "3/4" }) do
-  local bad, badError = Logic.validateCurrent({ ok = true, id = "x", path = "/p", favorite = false, history = history })
+  local bad, badError = Logic.validateCurrent({ ok = true, id = "x", path = "/p", favorite = false, hidden = false, history = history })
   assert(bad == nil and badError:find("history", 1, true), "malformed history must be rejected")
 end
-assert(Logic.validateCurrent({ ok = true, id = "x", path = "/p", favorite = false, history = { cursor = nil, length = 0 } }))
+assert(Logic.validateCurrent({ ok = true, id = "x", path = "/p", favorite = false, hidden = false, history = { cursor = nil, length = 0 } }))
 
 local rendered
 local runs = {}
@@ -118,7 +150,7 @@ noctalia = {
     decode = function(text)
       if text == "with source" then return payload end
       if text == "without source" then
-        return { ok = true, id = "n", path = "/wall/next.jpg", favorite = false, history = { cursor = 0, length = 1 } }
+        return { ok = true, id = "n", path = "/wall/next.jpg", favorite = false, hidden = false, history = { cursor = 0, length = 1 } }
       end
       return nil, "invalid JSON"
     end,

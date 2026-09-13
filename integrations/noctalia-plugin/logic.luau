@@ -9,10 +9,16 @@ local commands = {
   later = { "walictl", "later" },
   favorite = { "walictl", "favorite" },
   edit = { "walictl", "edit" },
+  hide = { "walictl", "hide" },
+  hidden = { "walictl", "hidden", "--json" },
 }
 
 function M.commandFor(action)
   return assert(commands[action], "unknown walictl action: " .. tostring(action))
+end
+
+function M.unhideCommand(photoId)
+  return { "walictl", "unhide", photoId }
 end
 
 function M.validateCurrent(payload)
@@ -22,6 +28,7 @@ function M.validateCurrent(payload)
     if type(payload[field]) ~= "string" then return nil, "walictl current returned an invalid " .. field .. " field" end
   end
   if type(payload.favorite) ~= "boolean" then return nil, "walictl current returned an invalid favorite field" end
+  if type(payload.hidden) ~= "boolean" then return nil, "walictl current returned an invalid hidden field" end
   for _, field in ipairs({ "date", "display_date", "source_path", "variant_path" }) do
     if payload[field] ~= nil and type(payload[field]) ~= "string" then
       return nil, "walictl current returned an invalid " .. field .. " field"
@@ -44,7 +51,7 @@ end
 
 function M.refreshAfter(action)
   return action == "previous" or action == "next" or action == "random" or action == "favorite"
-    or action == "earlier" or action == "later"
+    or action == "earlier" or action == "later" or action == "hide"
 end
 
 function M.canStart(busy)
@@ -82,6 +89,41 @@ end
 
 function M.nextTooltip(payload)
   return M.nextSamples(payload) and "Next: sample (l / →)" or "Next (l / →)"
+end
+
+function M.validateHidden(payload)
+  if type(payload) ~= "table" then return nil, "walictl hidden did not return an object" end
+  if payload.ok ~= true then return nil, "walictl hidden reported failure" end
+  if type(payload.hidden) ~= "table" then return nil, "walictl hidden returned an invalid hidden field" end
+  for index, item in ipairs(payload.hidden) do
+    if type(item) ~= "table" or type(item.id) ~= "string" then
+      return nil, "walictl hidden returned an invalid id in item " .. tostring(index)
+    end
+    if type(item.exists) ~= "boolean" then
+      return nil, "walictl hidden returned an invalid exists field in item " .. tostring(index)
+    end
+    for _, field in ipairs({ "added", "date", "display_date", "path", "source_path" }) do
+      if item[field] ~= nil and type(item[field]) ~= "string" then
+        return nil, "walictl hidden returned an invalid " .. field .. " field in item " .. tostring(index)
+      end
+    end
+  end
+  return payload.hidden
+end
+
+function M.decodeHidden(text, decoder)
+  local decoded, payload, decodeError = pcall(decoder, text)
+  if not decoded then return nil, tostring(payload) end
+  if payload == nil then return nil, tostring(decodeError or "walictl hidden returned invalid JSON") end
+  return M.validateHidden(payload)
+end
+
+function M.hideGlyph(hidden)
+  return hidden and "eye" or "eye-off"
+end
+
+function M.hideTooltip(hidden)
+  return hidden and "Restore (x)" or "Hide (x) · right-click: hidden list"
 end
 
 return M
