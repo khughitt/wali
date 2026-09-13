@@ -48,7 +48,7 @@ one host applies everywhere.
 ```
 walictl hide [<id>]        # hide; when <id> is the displayed photo, sample a replacement
 walictl unhide <id>        # restore
-walictl hidden --json      # {ok, hidden: [{id, added, path, source_path, exists}]}
+walictl hidden --json      # {ok, hidden: [{id, added, date, display_date, path, source_path, exists}]}
 ```
 
 - `hide` with no id acts on the displayed photo. The hide is saved first.
@@ -61,8 +61,9 @@ walictl hidden --json      # {ok, hidden: [{id, added, path, source_path, exists
   `hidden <id>` on stdout, then the replacement error on stderr, exit 1. The
   panel refreshes metadata after `hide` regardless of exit status, so the
   caption shows both the `hidden` state and the error.
-- `hidden --json` mirrors `favorites --json` item for item, so the panel list
-  and any script can render thumbnails from `path`.
+- `hidden --json` mirrors `favorites --json` item for item (both gain `date`
+  and `display_date`), so the panel list and any script can render thumbnails
+  from `path` with a caption.
 - `current --json` gains `"hidden": <bool>`: membership in the hidden set,
   however the photo came to be displayed (history replay, a failed
   replacement, or a hide made on another host).
