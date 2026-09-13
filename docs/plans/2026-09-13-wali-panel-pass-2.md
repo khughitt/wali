@@ -370,10 +370,10 @@ git commit -m "feat(panel): quieter chrome with photo-click sampling and history
 
 - [ ] **Step 1: Load the branch into the running Noctalia**
 
-The dotfiles `setup.sh` (`noctalia-plugins` phase) links `~/.config/noctalia/plugins/wali-panel` to `~/d/wali/integrations/noctalia-plugin`, the main checkout, so Noctalia hot-reloads `.luau` files from `main`, not from this worktree. As of 2026-09-13 that link still points at the old dotfiles location and dangles (`ls ~/.config/noctalia/plugins/wali-panel/` fails); step 3 repairs it. To review without merging, point the link at the worktree temporarily:
+The dotfiles `setup.sh` (`noctalia-plugins` phase) links `~/.local/share/noctalia/plugins/wali-panel` to `~/d/wali/integrations/noctalia-plugin`, the main checkout, so Noctalia hot-reloads `.luau` files from `main`, not from this worktree. (A stale `~/.config/noctalia/plugins/wali-panel` link to the old dotfiles location also exists and dangles; Noctalia does not read it.) To review without merging, point the link at the worktree temporarily:
 
 ```bash
-ln -sfn "$(pwd)/integrations/noctalia-plugin" ~/.config/noctalia/plugins/wali-panel
+ln -sfn "$(pwd)/integrations/noctalia-plugin" ~/.local/share/noctalia/plugins/wali-panel
 noctalia msg plugins disable khughitt/wali-panel && noctalia msg plugins enable khughitt/wali-panel
 noctalia msg panel-toggle khughitt/wali-panel:panel
 ```
@@ -391,7 +391,7 @@ tasks park <step-3-id> "Panel loaded from the worktree; judge ghost nav, history
 Once the branch merges (or review asks for changes and they land), restore the link to the main checkout:
 
 ```bash
-ln -sfn "$HOME/d/wali/integrations/noctalia-plugin" ~/.config/noctalia/plugins/wali-panel
+ln -sfn "$HOME/d/wali/integrations/noctalia-plugin" ~/.local/share/noctalia/plugins/wali-panel
 noctalia msg plugins disable khughitt/wali-panel && noctalia msg plugins enable khughitt/wali-panel
 tasks done <step-3-id> "rendered panel reviewed"
 ```

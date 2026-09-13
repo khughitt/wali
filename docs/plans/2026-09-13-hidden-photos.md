@@ -1391,7 +1391,7 @@ git commit -m "feat(panel): hide photos and browse the hidden list"
 The panel runs `walictl` by name. `~/bin/walictl` is a copy of the dotfiles shim (`~/d/dotfiles/bin/walictl`, identical bytes) that execs `~/d/wali/bin/walictl`, the main checkout, which has no `hide` and no `current.hidden` until this branch merges. Point both the plugin and the CLI at the worktree for the review, from the worktree root:
 
 ```bash
-ln -sfn "$(pwd)/integrations/noctalia-plugin" ~/.config/noctalia/plugins/wali-panel
+ln -sfn "$(pwd)/integrations/noctalia-plugin" ~/.local/share/noctalia/plugins/wali-panel
 printf '#!/usr/bin/env bash\n# review shim: restored from ~/d/dotfiles/bin/walictl afterwards\nexec "%s/bin/walictl" "$@"\n' "$(pwd)" > ~/bin/walictl
 walictl hidden --json   # proves the shell reaches the worktree CLI
 noctalia msg plugins disable khughitt/wali-panel && noctalia msg plugins enable khughitt/wali-panel
@@ -1413,7 +1413,7 @@ After review, restore both and re-enable:
 
 ```bash
 cp ~/d/dotfiles/bin/walictl ~/bin/walictl
-ln -sfn "$HOME/d/wali/integrations/noctalia-plugin" ~/.config/noctalia/plugins/wali-panel
+ln -sfn "$HOME/d/wali/integrations/noctalia-plugin" ~/.local/share/noctalia/plugins/wali-panel
 noctalia msg plugins disable khughitt/wali-panel && noctalia msg plugins enable khughitt/wali-panel
 tasks done <step-7-id> "hidden photos verified on the running panel"
 ```
