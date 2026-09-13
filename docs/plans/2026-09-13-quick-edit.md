@@ -14,11 +14,13 @@
 
 - `bin/walictl` stays standard-library only; `pyproject.toml` declares no runtime dependencies.
 - Config: `edits_file` (optional top-level key) and `[edits] output = "WxH"` (optional). With `edits_file` unset, recipes are off: no render step, navigation as today, and every `variant` command fails with `config key edits_file is required`. `[edits]` without `edits_file` is `config key edits_file is required for [edits]`.
-- The `variants_dir` config key is removed; the cache is `$XDG_CACHE_HOME/wali/variants/<id>.jpg` + `<id>.recipe`; previews are `$XDG_CACHE_HOME/wali/preview/<id>.<hash8>.jpg`.
+- The `variants_dir` config key is removed; the cache is `$XDG_CACHE_HOME/wali/variants/<id>/<key16>/<id>.jpg` (no sidecar: a render is current iff its keyed file exists); previews are `$XDG_CACHE_HOME/wali/preview/<id>/<key8>.jpg`. Temporary render files end in `.tmp.jpg`.
+- Noctalia skips a `wallpaper-set` for the path it already shows, so every distinct render has a distinct path. Nothing deletes a render except a prune that runs after a successful `wallpaper-set` (or for a photo that is not displayed).
+- Photo ids from recipe files, ratings files, and command arguments pass `check_photo_id`: a single stem, non-empty, not `.`/`..`, no `/`, no NUL. Cache maintenance lists directories; it never expands an id inside a glob.
 - Recipe keys, defaults, ranges, and magick mapping are the spec's table; operation order is rotate → (resize, preview only) → tone → blur → noise → bloom → crop. `chroma` and `zoom` do not exist.
 - Lock order is history → edits → variants; a command needing several acquires them in that order and never the reverse. `apply` and `reset` hold the history lock from reading the displayed wallpaper through updating history.
-- `apply` order: render to temp (variants lock, released) → save recipe (edits lock) → publish (variants lock) → set wallpaper if displayed → update the history entry's path. `reset` order: remove recipe → set library file if displayed → update history path → delete cache pair last.
-- A missing `magick` is `magick command not found`; a failed render is `magick failed: <stderr>` and leaves the previous cache pair.
+- `apply` order: render to temp in the new keyed dir (variants lock, released) → save recipe (edits lock) → publish (variants lock) → set wallpaper if displayed → update the history entry's path → prune the photo's other renders (variants lock; skipped when the set was rejected). `reset` order: remove recipe → set library file if displayed → update history path → prune every render of the photo, only if not displayed or the set succeeded.
+- A missing `magick` is `magick command not found`; a failed render is `magick failed: <stderr>` and leaves the previous render.
 - Every failure is one line on stderr, exit 1.
 - `plugin.toml` adds `"a"` to `capture_keys` (a manifest change: `noctalia msg plugins disable khughitt/wali-panel` then `enable`).
 - Plans `2026-09-13-wali-panel-pass-2.md` and `2026-09-13-hidden-photos.md` land first; this plan's panel tasks assume their `panel.luau` (ghost nav, `state.view`, `utilityButton` with `onRightClick`, `labels` test helper).
@@ -29,11 +31,11 @@
 ### Task 1: Config `edits_file` / `[edits] output`, and the cache replaces `variants_dir`
 
 **Files:**
-- Modify: `bin/walictl` (`Config`, new `EditsConfig`, `load_config`, `resolve_variant`, `display_path`, `replay_path`, cache path helpers; every `resolve_variant(config, id)` caller keeps its signature)
+- Modify: `bin/walictl` (`Config`, new `EditsConfig`, `load_config`, `check_photo_id`, `photo_id_arg`, `resolve_variant`, cache path helpers, `build_parser`)
 - Test: `tests/test_walictl.py` (the `env` fixture, config tests, variant tests)
 
 **Interfaces:**
-- Produces: `EditsConfig(file: Path, output: tuple[int, int] | None)`; `Config.edits: EditsConfig | None` (replacing `variants_dir`); `cache_dir() -> Path` (`$XDG_CACHE_HOME/wali`), `variants_dir() -> Path`, `previews_dir() -> Path`, `variant_path(photo_id) -> Path`, `sidecar_path(photo_id) -> Path`; `resolve_variant(config, photo_id) -> Path | None` returns `variant_path(photo_id)` when `config.edits` is set and the file exists. `parse_output("3440x1440") -> (3440, 1440)`.
+- Produces: `EditsConfig(file: Path, output: tuple[int, int] | None)`; `Config.edits: EditsConfig | None` (replacing `variants_dir`); `check_photo_id(value: object, label: str) -> str`; `photo_id_arg` (argparse type); `cache_dir() -> Path` (`$XDG_CACHE_HOME/wali`), `variants_dir() -> Path`, `previews_dir() -> Path`, `variant_dir(photo_id) -> Path` (`variants/<id>`), `variant_file(photo_id, key) -> Path` (`variants/<id>/<key[:16]>/<id>.jpg`), `preview_dir(photo_id) -> Path`; `parse_output("3440x1440") -> (3440, 1440)`. `resolve_variant(config, photo_id)` is reduced to returning `None` (with `config.edits` unset it always did); Task 4 replaces it with the key-aware `current_variant`.
 - Consumes: `_xdg`, `_expand`, `WalictlError`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -91,21 +93,28 @@ def test_invalid_edits_config(walictl: ModuleType, env: dict[str, Path], extra: 
 
 (add `import re` to the test module's imports.)
 
-Rewrite `test_resolve_variant_and_source` and `test_display_path_prefers_variant_and_rejects_unknown_id` so the variant lives in the cache and counts only when edits are on:
+Rewrite `test_resolve_variant_and_source` and `test_display_path_prefers_variant_and_rejects_unknown_id` around the cache paths and id validation:
 
 ```python
+def test_cache_paths_and_photo_id_validation(walictl: ModuleType, env: dict[str, Path]) -> None:
+    photo = "PXL_20210608_111152739"
+    assert walictl.variant_dir(photo) == env["cache_home"] / "wali" / "variants" / photo
+    assert walictl.variant_file(photo, "abcdef0123456789ffff") == walictl.variant_dir(photo) / "abcdef0123456789" / f"{photo}.jpg"
+    assert walictl.preview_dir(photo) == env["cache_home"] / "wali" / "preview" / photo
+    assert walictl.check_photo_id("a.b", "id") == "a.b"
+    for bad in ("", ".", "..", "a/b", "../victim", "a\x00b", 5, None):
+        with pytest.raises(walictl.WalictlError, match="id must be a single file name stem"):
+            walictl.check_photo_id(bad, "id")
+
+
+def test_cli_rejects_path_like_ids(walictl: ModuleType, env: dict[str, Path]) -> None:
+    code, _, stderr = run_cli(walictl, ["favorite", "--add", "../victim"])
+    assert code == 2 and "single file name stem" in stderr
+
+
 def test_resolve_variant_and_source(walictl: ModuleType, env: dict[str, Path]) -> None:
     config = walictl.load_config(walictl.config_path())
-    cached = walictl.variant_path("PXL_20210608_111152739")
-    assert cached == env["cache_home"] / "wali" / "variants" / "PXL_20210608_111152739.jpg"
-    assert walictl.sidecar_path("PXL_20210608_111152739") == cached.with_suffix(".recipe")
-    cached.parent.mkdir(parents=True)
-    cached.touch()
-    assert walictl.resolve_variant(config, "PXL_20210608_111152739") is None, "edits off: the cache is ignored"
-    enable_edits(env)
-    config = walictl.load_config(walictl.config_path())
-    assert walictl.resolve_variant(config, "PXL_20210608_111152739") == cached
-    assert walictl.resolve_variant(config, "PXL_20210609_120000000") is None
+    assert walictl.resolve_variant(config, "PXL_20210608_111152739") is None
     assert walictl.resolve_source(config, "PXL_20210608_111152739") == env["archive"] / "2021" / "06" / "PXL_20210608_111152739.jpg"
     assert walictl.resolve_source(config, "PXL_20210609_120000000") is None
     assert walictl.resolve_source(config, "IMG_1") is None
@@ -126,7 +135,7 @@ Delete `test_replay_prefers_a_variant_created_later`, `test_sampling_prefers_var
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run --frozen pytest -q tests/test_walictl.py -k "config or variant or display_path"`
-Expected: FAIL with `AttributeError: ... has no attribute 'EditsConfig'` and `variant_path`.
+Expected: FAIL with `AttributeError: ... has no attribute 'EditsConfig'` and `variant_dir`.
 
 - [ ] **Step 3: Implement**
 
@@ -169,7 +178,28 @@ def load_edits_config(raw: dict[str, object]) -> EditsConfig | None:
     return EditsConfig(file=_expand(raw["edits_file"], "edits_file"), output=output)
 ```
 
-and in `load_config`'s return: `edits=load_edits_config(raw),` in place of the `variants_dir=` line. Then replace `resolve_variant` and add the cache helpers next to `state_dir`:
+and in `load_config`'s return: `edits=load_edits_config(raw),` in place of the `variants_dir=` line. Add the id check next to `photo_id` and the cache helpers next to `state_dir`:
+
+```python
+def check_photo_id(value: object, label: str) -> str:
+    """An id that is safe to place in a path: one file-name stem, nothing more."""
+    if (
+        not isinstance(value, str)
+        or value in ("", ".", "..")
+        or "/" in value
+        or "\x00" in value
+        or Path(value).name != value
+    ):
+        raise WalictlError(f"{label} must be a single file name stem: {value!r}")
+    return value
+
+
+def photo_id_arg(value: str) -> str:
+    try:
+        return check_photo_id(value, "photo id")
+    except WalictlError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+```
 
 ```python
 def cache_dir() -> Path:
@@ -184,23 +214,28 @@ def previews_dir() -> Path:
     return cache_dir() / "preview"
 
 
-def variant_path(photo_id: str) -> Path:
-    return variants_dir() / f"{photo_id}.jpg"
+def variant_dir(photo_id: str) -> Path:
+    return variants_dir() / photo_id
 
 
-def sidecar_path(photo_id: str) -> Path:
-    return variants_dir() / f"{photo_id}.recipe"
+def variant_file(photo_id: str, key: str) -> Path:
+    return variant_dir(photo_id) / key[:16] / f"{photo_id}.jpg"
+
+
+def preview_dir(photo_id: str) -> Path:
+    return previews_dir() / photo_id
 ```
+
+Reduce `resolve_variant` to a stub Task 4 replaces:
 
 ```python
 def resolve_variant(config: Config, photo_id: str) -> Path | None:
-    if config.edits is None:
-        return None
-    cached = variant_path(photo_id)
-    return cached if cached.is_file() else None
+    return None  # replaced by current_variant once recipes exist
 ```
 
-`display_path` and `replay_path` keep calling `resolve_variant` for now (Task 4 swaps in `ensure_variant`). `find_by_stem` loses its only non-test caller: keep it, `scan_library` still uses `_extension_rank`; if `find_by_stem` is now unused, delete it and its test `test_find_by_stem_matches_literal_bracketed_stem`.
+In `build_parser`, give every positional `photo_id` argument `type=photo_id_arg` (`favorite`, and the `hide`/`unhide` parsers from the hidden-photos plan).
+
+`display_path` and `replay_path` keep calling `resolve_variant` for now (Task 4 swaps in `ensure_variant`). `find_by_stem` loses its only non-test caller (`scan_library` still uses `_extension_rank`): delete it and its test `test_find_by_stem_matches_literal_bracketed_stem`.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -226,7 +261,7 @@ git commit -m "feat(walictl): edits config and a per-host variant cache"
 - Test: `tests/test_walictl.py`
 
 **Interfaces:**
-- Produces: `RECIPE_DEFAULTS: dict[str, int | str]`, `RECIPE_RANGES: dict[str, tuple[int, int]]`, `ROTATIONS = (0, 90, 180, 270)`, `ANCHORS = ("center", "top", "bottom", "left", "right")`; `parse_settings(settings: list[str]) -> dict[str, int | str]` (`k=v` strings → recipe with defaults dropped); `validate_recipe(raw: object, label: str) -> dict[str, int | str]`; `effective(recipe) -> dict` (defaults filled in); `canonical(recipe) -> str`; `EDITS_VERSION = 1`; `class EditsStore(edits: dict[str, dict[str, object]])` with `load(path)`, `save(path)`, `get(photo_id) -> dict | None` (the recipe without `updated`), `set(photo_id, recipe, now)`, `remove(photo_id) -> bool`; `edits_lock() -> Path`, `variants_lock() -> Path`.
+- Produces: `_rating_entries` (hidden-photos plan) also calls `check_photo_id(photo, "favorites file id")` per entry, with a line in `test_ratings_reject_corrupt_file` for `{"version": 2, "favorites": {"../x": {"added": "T"}}, "hidden": {}}` → `favorites file id must be a single file name stem`; `RECIPE_DEFAULTS: dict[str, int | str]`, `RECIPE_RANGES: dict[str, tuple[int, int]]`, `ROTATIONS = (0, 90, 180, 270)`, `ANCHORS = ("center", "top", "bottom", "left", "right")`; `parse_settings(settings: list[str]) -> dict[str, int | str]` (`k=v` strings → recipe with defaults dropped); `validate_recipe(raw: object, label: str) -> dict[str, int | str]`; `effective(recipe) -> dict` (defaults filled in); `canonical(recipe) -> str`; `EDITS_VERSION = 1`; `class EditsStore(edits: dict[str, dict[str, object]])` with `load(path)`, `save(path)`, `get(photo_id) -> dict | None` (the recipe without `updated`), `set(photo_id, recipe, now)`, `remove(photo_id) -> bool`; `edits_lock() -> Path`, `variants_lock() -> Path`.
 - Consumes: `read_json`, `write_json_atomic`, `state_dir`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -277,6 +312,7 @@ def test_edits_store_round_trip_and_validation(walictl: ModuleType, tmp_path: Pa
         ('{"version": 1, "edits": {"a": 5}}', "malformed edits entry: a"),
         ('{"version": 1, "edits": {"a": {"rotate": 45, "updated": "T"}}}', "malformed edits entry: a: rotate must be one of"),
         ('{"version": 1, "edits": {"a": {"rotate": 90}}}', "malformed edits entry: a: missing updated"),
+        ('{"version": 1, "edits": {"../victim": {"rotate": 90, "updated": "T"}}}', "edits file id must be a single file name stem"),
     ):
         path.write_text(text)
         with pytest.raises(walictl.WalictlError, match=re.escape(message)):
@@ -403,6 +439,7 @@ class EditsStore:
             raise WalictlError(f"edits file has no edits object: {path}")
         checked: dict[str, dict[str, object]] = {}
         for photo, value in entries.items():
+            check_photo_id(photo, "edits file id")
             if not isinstance(value, dict):
                 raise WalictlError(f"malformed edits entry: {photo}")
             if not isinstance(value.get("updated"), str):
@@ -456,11 +493,21 @@ git commit -m "feat(walictl): recipe model and edits store"
 **Interfaces:**
 - Produces: `PREVIEW_WIDTH = 560`; `image_size(path) -> tuple[int, int]` via `magick identify -format "%w %h"`; `crop_box(width, height, output, anchor) -> tuple[int, int, int, int]` (`cw, ch, x, y`); `magick_argv(source, recipe, output, dest, preview_width) -> list[str]`; `render(source, recipe, output, dest, preview_width=None) -> None` (runs the argv, raises `magick command not found` / `magick failed: <stderr>`); `output_required(recipe, output)` raising `config key edits.output is required for anchor`.
 - Consumes: `effective`, `subprocess`.
-- Test fixture `fake_magick(env, monkeypatch) -> Path` (the log file): installs a `magick` script first on `PATH` that answers `identify` with `$FAKE_MAGICK_SIZE` (default `3440 1935`), and for any other invocation appends the argv as one JSON line to the log and copies argv[1] to argv[-1]; `FAKE_MAGICK_FAIL=1` makes it exit 1 with `boom` on stderr.
+- Test fixture `fake_magick(env, monkeypatch) -> Path` (the log file): installs a `magick` script first on `PATH` that answers `identify` with `$FAKE_MAGICK_SIZE` (default `3440 1935`), and for any other invocation appends the argv as one JSON line to the log and copies argv[1] to argv[-1]; `FAKE_MAGICK_FAIL=1` makes it exit 1 with `boom` on stderr; `FAKE_MAGICK_PARTIAL=1` writes one byte to argv[-1] and then exits 1 (a render that dies mid-write).
+- `FakeNoctalia.run` today asserts every `subprocess.run` is `noctalia msg`; it must forward anything else to the real `subprocess.run`, or no test using both fixtures can reach the stub.
 
 - [ ] **Step 1: Write the fixture and the failing tests**
 
-Fixture, next to `noctalia`:
+First make `FakeNoctalia` forward non-Noctalia commands. In its `__init__` add `self.real_run = subprocess.run` (captured before the fixture monkeypatches it), and at the top of `run`:
+
+```python
+    def run(self, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if list(args[:2]) != ["noctalia", "msg"]:
+            return self.real_run(args, **kwargs)
+        self.calls.append(list(args))
+```
+
+(dropping the `assert args[:2] == ...` line). Fixture, next to `noctalia`:
 
 ```python
 @pytest.fixture
@@ -481,11 +528,16 @@ def fake_magick(env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> Path:
         "if os.environ.get('FAKE_MAGICK_FAIL'):\n"
         "    sys.stderr.write('boom\\n')\n"
         "    sys.exit(1)\n"
+        "if os.environ.get('FAKE_MAGICK_PARTIAL'):\n"
+        "    open(args[-1], 'wb').write(b'x')\n"
+        "    sys.stderr.write('died\\n')\n"
+        "    sys.exit(1)\n"
         "shutil.copyfile(args[0], args[-1])\n"
     )
     script.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
     monkeypatch.delenv("FAKE_MAGICK_FAIL", raising=False)
+    monkeypatch.delenv("FAKE_MAGICK_PARTIAL", raising=False)
     monkeypatch.delenv("FAKE_MAGICK_SIZE", raising=False)
     return log
 
@@ -715,11 +767,11 @@ git commit -m "feat(walictl): ImageMagick render pipeline"
 ### Task 4: The variant cache and lazy rendering on selection
 
 **Files:**
-- Modify: `bin/walictl` (`source_identity`, `render_key`, `render_to_cache`, `delete_variant`, `ensure_variant`; `display_path`, `replay_path`, `navigate`)
+- Modify: `bin/walictl` (`source_identity`, `render_key`, `render_to_temp`, `publish_variant`, `prune_variants`, `current_variant`, `ensure_variant`; `display_path`, `replay_path`, `navigate`, `describe`, `cmd_current`, `_rating_items`)
 - Test: `tests/test_walictl.py`
 
 **Interfaces:**
-- Produces: `source_identity(path) -> dict[str, object]` (`{"path", "size", "mtime_ns"}`); `render_key(recipe, output, identity) -> str` (SHA-256 hex of the canonical JSON of `{"recipe", "output", "source"}`); `render_to_cache(source, recipe, output, photo_id, key) -> Path` (temp render under the caller's `variants.lock`, `os.replace` onto `variant_path`, sidecar `{"key": key}` via `write_json_atomic`); `delete_variant(photo_id)`; `ensure_variant(config, library, photo_id) -> Path | None`. `display_path(config, library, photo_id)` returns `ensure_variant(...) or library[photo_id]`; `replay_path(config, library, entry)` returns `ensure_variant(config, library, entry.id) or library.get(entry.id) or Path(entry.path)`.
+- Produces: `source_identity(path) -> dict[str, object]` (`{"path", "size", "mtime_ns"}`); `render_key(recipe, output, identity) -> str` (SHA-256 hex of the canonical JSON of `{"recipe", "output", "source"}`); `render_to_temp(source, recipe, output, target_dir) -> Path` (a `.tmp.jpg` inside `target_dir`, created as needed; deleted on failure); `publish_variant(tmp, photo_id, key) -> Path` (`os.replace` onto `variant_file`); `prune_variants(photo_id, keep: Path | None)` (removes every `variant_dir(photo_id)/<key>/` except the one holding `keep`; lists directories, no glob); `recipe_key(config, library, photo_id) -> tuple[recipe | None, key | None]` (loads the recipe under `edits.lock`); `current_variant(config, library, photo_id) -> Path | None` (the keyed file if it exists — never renders, never deletes); `ensure_variant(config, library, photo_id) -> Path | None` (renders when missing; never deletes). `resolve_variant(config, photo_id)` is removed; `describe`, `cmd_current`, and `_rating_items` call `current_variant(config, library, photo_id)`. `display_path(config, library, photo_id)` returns `ensure_variant(...) or library[photo_id]`; `replay_path(config, library, entry)` returns `ensure_variant(config, library, entry.id) or library.get(entry.id) or Path(entry.path)`. `navigate` calls `prune_variants(selected.id, keep=displayed)` after `set_default` succeeds.
 - Consumes: Tasks 1–3, `locked`, `edits_lock`, `variants_lock`, `EditsStore`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -732,7 +784,12 @@ def recipe_for(walictl: ModuleType, env: dict[str, Path], photo: str, recipe: di
     store.save(edits)
 
 
-def test_ensure_variant_renders_once_and_tracks_staleness(
+def renders_of(walictl: ModuleType, photo: str) -> list[Path]:
+    root = walictl.variant_dir(photo)
+    return sorted(p for p in root.glob("*/*.jpg")) if root.is_dir() else []
+
+
+def test_ensure_variant_renders_per_key_and_never_deletes(
     walictl: ModuleType, env: dict[str, Path], fake_magick: Path
 ) -> None:
     enable_edits(env)
@@ -743,29 +800,46 @@ def test_ensure_variant_renders_once_and_tracks_staleness(
     assert walictl.ensure_variant(config, library, photo) is None
     assert magick_calls(fake_magick) == []
     recipe_for(walictl, env, photo, {"rotate": 90})
-    cached = walictl.ensure_variant(config, library, photo)
-    assert cached == walictl.variant_path(photo) and cached.read_bytes() == b"v1"
-    assert json.loads(walictl.sidecar_path(photo).read_text())["key"] == walictl.render_key(
-        {"rotate": 90}, (3440, 1440), walictl.source_identity(library[photo])
-    )
+    first = walictl.ensure_variant(config, library, photo)
+    key = walictl.render_key({"rotate": 90}, (3440, 1440), walictl.source_identity(library[photo]))
+    assert first == walictl.variant_file(photo, key) and first.read_bytes() == b"v1"
+    assert first.stem == photo, "the render keeps the photo id as its stem"
     assert len(magick_calls(fake_magick)) == 1
-    assert walictl.ensure_variant(config, library, photo) == cached
-    assert len(magick_calls(fake_magick)) == 1, "a current render is not repeated"
+    assert walictl.ensure_variant(config, library, photo) == first
+    assert len(magick_calls(fake_magick)) == 1, "an existing keyed render is not repeated"
+    assert walictl.current_variant(config, library, photo) == first
     recipe_for(walictl, env, photo, {"rotate": 180})
-    walictl.ensure_variant(config, library, photo)
-    assert len(magick_calls(fake_magick)) == 2, "a changed recipe rerenders"
-    source = env["wallpapers"] / f"{photo}.jpg"
-    source.write_bytes(b"v2-longer")
-    walictl.ensure_variant(config, library, photo)
-    assert len(magick_calls(fake_magick)) == 3, "a changed source rerenders"
-    assert cached.read_bytes() == b"v2-longer"
-    assert not list(cached.parent.glob("*.tmp*")), "no temp files left behind"
+    assert walictl.current_variant(config, library, photo) is None, "current_variant never renders"
+    second = walictl.ensure_variant(config, library, photo)
+    assert second != first and second.parent != first.parent, "a changed recipe renders to a new path"
+    assert first.exists(), "ensure_variant never deletes"
+    (env["wallpapers"] / f"{photo}.jpg").write_bytes(b"v2-longer")
+    third = walictl.ensure_variant(config, library, photo)
+    assert third not in (first, second) and third.read_bytes() == b"v2-longer", "a changed source renders to a new path"
+    assert not list(walictl.variant_dir(photo).rglob("*.tmp.jpg")), "no temp files left behind"
     recipe_for(walictl, env, photo, {})
     assert walictl.ensure_variant(config, library, photo) is None
-    assert not cached.exists() and not walictl.sidecar_path(photo).exists(), "no recipe deletes the pair"
+    assert renders_of(walictl, photo) == sorted([first, second, third]), "a removed recipe leaves renders for the prune"
+    walictl.prune_variants(photo, keep=None)
+    assert renders_of(walictl, photo) == []
+    assert not walictl.variant_dir(photo).exists()
 
 
-def test_ensure_variant_failure_keeps_the_previous_pair(
+def test_prune_variants_keeps_only_the_displayed_render(walictl: ModuleType, env: dict[str, Path], fake_magick: Path) -> None:
+    enable_edits(env)
+    config = walictl.load_config(walictl.config_path())
+    library = walictl.scan_library(config.wallpaper_dir)
+    photo = "PXL_20210608_111152739"
+    recipe_for(walictl, env, photo, {"rotate": 90})
+    first = walictl.ensure_variant(config, library, photo)
+    recipe_for(walictl, env, photo, {"rotate": 180})
+    second = walictl.ensure_variant(config, library, photo)
+    walictl.prune_variants(photo, keep=second)
+    assert renders_of(walictl, photo) == [second] and not first.parent.exists()
+    walictl.prune_variants("PXL_20210609_120000000", keep=None)  # no renders: no error
+
+
+def test_ensure_variant_failure_keeps_the_previous_render(
     walictl: ModuleType, env: dict[str, Path], fake_magick: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     enable_edits(env)
@@ -774,14 +848,15 @@ def test_ensure_variant_failure_keeps_the_previous_pair(
     photo = "PXL_20210608_111152739"
     (env["wallpapers"] / f"{photo}.jpg").write_bytes(b"v1")
     recipe_for(walictl, env, photo, {"rotate": 90})
-    cached = walictl.ensure_variant(config, library, photo)
-    old_key = walictl.sidecar_path(photo).read_text()
+    first = walictl.ensure_variant(config, library, photo)
     recipe_for(walictl, env, photo, {"rotate": 270})
-    monkeypatch.setenv("FAKE_MAGICK_FAIL", "1")
-    with pytest.raises(walictl.WalictlError, match="magick failed: boom"):
+    monkeypatch.setenv("FAKE_MAGICK_PARTIAL", "1")
+    with pytest.raises(walictl.WalictlError, match="magick failed: died"):
         walictl.ensure_variant(config, library, photo)
-    assert cached.read_bytes() == b"v1" and walictl.sidecar_path(photo).read_text() == old_key
-    assert not list(cached.parent.glob("*.tmp*"))
+    assert first.read_bytes() == b"v1" and renders_of(walictl, photo) == [first]
+    assert not list(walictl.variant_dir(photo).rglob("*.tmp.jpg")), "a partial render is removed"
+    monkeypatch.delenv("FAKE_MAGICK_PARTIAL")
+    assert walictl.current_variant(config, library, photo) is None, "a failed render is never current"
 
 
 def test_navigation_never_renders_with_edits_unset(
@@ -801,20 +876,40 @@ def test_sampling_and_replay_use_the_rendered_variant(
         recipe_for(walictl, env, stem, {"brightness": 5})
     run_cli(walictl, ["random", "--seed", "3"])
     picked = load_history(walictl).entries[1]
-    assert Path(picked.path) == walictl.variant_path(picked.id)
-    assert noctalia.default == walictl.variant_path(picked.id)
+    assert Path(picked.path).stem == picked.id and Path(picked.path).is_relative_to(walictl.variant_dir(picked.id))
+    assert noctalia.default == Path(picked.path)
     # a recipe added after the entry was recorded is picked up on replay
     recipe_for(walictl, env, "PXL_20210608_111152739", {"rotate": 90})
     code, stdout, _ = run_cli(walictl, ["previous"])
     assert (code, stdout) == (0, "previous: PXL_20210608_111152739\n")
-    assert noctalia.default == walictl.variant_path("PXL_20210608_111152739")
-    assert load_history(walictl).entries[0].path == str(walictl.variant_path("PXL_20210608_111152739"))
-    # a recipe removed after the entry was recorded replays the library file, not the dead cache path
+    assert noctalia.default.is_relative_to(walictl.variant_dir("PXL_20210608_111152739"))
+    assert load_history(walictl).entries[0].path == str(noctalia.default)
+    # a recipe removed after the entry was recorded replays the library file, and the successful
+    # selection prunes the stale render
     recipe_for(walictl, env, picked.id, {})
     code, stdout, _ = run_cli(walictl, ["next"])
     assert (code, stdout) == (0, f"next: {picked.id}\n")
     assert noctalia.default == env["wallpapers"] / f"{picked.id}.jpg"
-    assert not walictl.variant_path(picked.id).exists()
+    assert renders_of(walictl, picked.id) == []
+
+
+def test_selection_prunes_only_after_a_successful_set(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path
+) -> None:
+    enable_edits(env)
+    photo = "PXL_20210609_120000000"
+    recipe_for(walictl, env, photo, {"rotate": 90})
+    assert run_cli(walictl, ["later"])[0] == 0
+    first = noctalia.default
+    assert run_cli(walictl, ["earlier"])[0] == 0
+    recipe_for(walictl, env, photo, {"rotate": 180})
+    noctalia.reject_set = "busy"
+    code, _, stderr = run_cli(walictl, ["later"])
+    assert code == 1 and "busy" in stderr
+    assert len(renders_of(walictl, photo)) == 2 and first.exists(), "a rejected selection prunes nothing"
+    noctalia.reject_set = None
+    assert run_cli(walictl, ["later"])[0] == 0
+    assert renders_of(walictl, photo) == [noctalia.default] and not first.exists()
 
 
 def test_capture_navigation_renders_variants(
@@ -823,8 +918,10 @@ def test_capture_navigation_renders_variants(
     enable_edits(env)
     recipe_for(walictl, env, "PXL_20210609_120000000", {"anchor": "top"})
     assert run_cli(walictl, ["later"]) == (0, "later: PXL_20210609_120000000\n", "")
-    assert noctalia.default == walictl.variant_path("PXL_20210609_120000000")
+    assert noctalia.default.stem == "PXL_20210609_120000000"
+    assert noctalia.default.is_relative_to(walictl.variant_dir("PXL_20210609_120000000"))
     assert magick_calls(fake_magick)[-1][1:5] == ["-crop", "3440x1440+0+0", "+repage", "-quality"]
+    assert magick_calls(fake_magick)[-1][-1].endswith(".tmp.jpg"), "renders go to a temp file first"
 
 
 def test_render_failure_fails_selection_and_leaves_wallpaper(
@@ -837,11 +934,24 @@ def test_render_failure_fails_selection_and_leaves_wallpaper(
     assert (code, stdout, stderr) == (1, "", "magick failed: boom\n")
     assert noctalia.default == env["wallpapers"] / "PXL_20210608_111152739.jpg"
     assert [e.origin for e in load_history(walictl).entries] == ["observed"]
+
+
+def test_current_reports_the_keyed_variant_without_rendering(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path
+) -> None:
+    enable_edits(env)
+    photo = "PXL_20210608_111152739"
+    recipe_for(walictl, env, photo, {"rotate": 90})
+    assert json.loads(run_cli(walictl, ["current", "--json"])[1])["variant_path"] is None
+    assert magick_calls(fake_magick) == []
+    config = walictl.load_config(walictl.config_path())
+    rendered = walictl.ensure_variant(config, walictl.scan_library(config.wallpaper_dir), photo)
+    assert json.loads(run_cli(walictl, ["current", "--json"])[1])["variant_path"] == str(rendered)
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `uv run --frozen pytest -q tests/test_walictl.py -k "ensure_variant or renders or rendered_variant or never_renders or render_failure"`
+Run: `uv run --frozen pytest -q tests/test_walictl.py -k "ensure_variant or prune or renders or rendered_variant or never_renders or render_failure or keyed_variant"`
 Expected: FAIL with `AttributeError: ... 'ensure_variant'`.
 
 - [ ] **Step 3: Implement**
@@ -862,14 +972,17 @@ def render_key(recipe: dict[str, int | str], output: tuple[int, int] | None, ide
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def render_to_temp(source: Path, recipe: dict[str, int | str], output: tuple[int, int] | None) -> Path:
-    """Render into a temp file in the variants dir; the caller publishes or deletes it."""
-    variants_dir().mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix=".render.", suffix=".jpg.tmp", dir=variants_dir())
+def render_to_temp(
+    source: Path, recipe: dict[str, int | str], output: tuple[int, int] | None, target_dir: Path,
+    preview_width: int | None = None,
+) -> Path:
+    """Render into a .tmp.jpg beside its future home; the caller publishes or deletes it."""
+    target_dir.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=".render.", suffix=".tmp.jpg", dir=target_dir)
     os.close(fd)
     tmp = Path(name)
     try:
-        render(source, recipe, output, tmp)
+        render(source, recipe, output, tmp, preview_width)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
@@ -877,43 +990,64 @@ def render_to_temp(source: Path, recipe: dict[str, int | str], output: tuple[int
 
 
 def publish_variant(tmp: Path, photo_id: str, key: str) -> Path:
-    target = variant_path(photo_id)
+    target = variant_file(photo_id, key)
     os.replace(tmp, target)
-    write_json_atomic(sidecar_path(photo_id), {"key": key})
     return target
 
 
-def delete_variant(photo_id: str) -> None:
-    variant_path(photo_id).unlink(missing_ok=True)
-    sidecar_path(photo_id).unlink(missing_ok=True)
+def prune_variants(photo_id: str, keep: Path | None) -> None:
+    """Remove every render of the photo except `keep`. Caller holds variants.lock."""
+    root = variant_dir(photo_id)
+    if not root.is_dir():
+        return
+    for keyed in root.iterdir():
+        if keep is not None and keyed == keep.parent:
+            continue
+        for stale in keyed.iterdir():
+            stale.unlink()
+        keyed.rmdir()
+    if not any(root.iterdir()):
+        root.rmdir()
 
 
-def variant_is_current(photo_id: str, key: str) -> bool:
-    sidecar = read_json(sidecar_path(photo_id), "variant sidecar") if sidecar_path(photo_id).is_file() else None
-    return variant_path(photo_id).is_file() and sidecar is not None and sidecar.get("key") == key
+def recipe_key(config: Config, library: dict[str, Path], photo_id: str) -> tuple[dict[str, int | str] | None, str | None]:
+    """The photo's recipe and the key of its render on this host, or (None, None)."""
+    if config.edits is None:
+        return None, None
+    with locked(edits_lock()):
+        recipe = EditsStore.load(config.edits.file).get(photo_id)
+    if recipe is None:
+        return None, None
+    source = library.get(photo_id)
+    if source is None:
+        raise WalictlError(f"unknown photo id: {photo_id}")
+    return recipe, render_key(recipe, config.edits.output, source_identity(source))
+
+
+def current_variant(config: Config, library: dict[str, Path], photo_id: str) -> Path | None:
+    """The photo's up-to-date render if one exists on disk. Never renders, never deletes."""
+    _recipe, key = recipe_key(config, library, photo_id)
+    if key is None:
+        return None
+    target = variant_file(photo_id, key)
+    return target if target.is_file() else None
 
 
 def ensure_variant(config: Config, library: dict[str, Path], photo_id: str) -> Path | None:
-    """The rendered variant for a photo with a recipe, rendering if missing or stale; None otherwise."""
-    if config.edits is None:
+    """The photo's render, rendering it if missing. Never deletes: pruning waits for a successful set."""
+    recipe, key = recipe_key(config, library, photo_id)
+    if recipe is None or key is None:
         return None
-    with locked(edits_lock()):
-        recipe = EditsStore.load(config.edits.file).get(photo_id)
     with locked(variants_lock()):
-        if recipe is None:
-            delete_variant(photo_id)
-            return None
-        source = library.get(photo_id)
-        if source is None:
-            raise WalictlError(f"unknown photo id: {photo_id}")
-        key = render_key(recipe, config.edits.output, source_identity(source))
-        if variant_is_current(photo_id, key):
-            return variant_path(photo_id)
-        output_required(recipe, config.edits.output)
-        return publish_variant(render_to_temp(source, recipe, config.edits.output), photo_id, key)
+        target = variant_file(photo_id, key)
+        if target.is_file():
+            return target
+        output_required(recipe, config.edits.output if config.edits else None)
+        tmp = render_to_temp(library[photo_id], recipe, config.edits.output if config.edits else None, target.parent)
+        return publish_variant(tmp, photo_id, key)
 ```
 
-Add `import hashlib` to the imports. Replace `display_path` and `replay_path`:
+Add `import hashlib` to the imports. Replace `display_path` and `replay_path`, and delete `resolve_variant`:
 
 ```python
 def display_path(config: Config, library: dict[str, Path], photo_id: str) -> Path:
@@ -929,21 +1063,30 @@ def replay_path(config: Config, library: dict[str, Path], entry: HistoryEntry) -
     return Path(entry.path)
 ```
 
-In `navigate`, load the library before the replay branch and pass it: move `library = scan_library(ctx.config.wallpaper_dir)` up to just after the `observe` early return, and change `displayed = replay_path(ctx.config, target)` to `displayed = replay_path(ctx.config, library, target)`. Remove the now-duplicate `library = scan_library(...)` from the `else` branch.
+In `navigate`: move `library = scan_library(ctx.config.wallpaper_dir)` up to just after the `observe` early return and drop the duplicate in the `else` branch; change `displayed = replay_path(ctx.config, target)` to `displayed = replay_path(ctx.config, library, target)`; and after each `ctx.noctalia.set_default(displayed)` (both the replay branch and the selection branch) add:
+
+```python
+            with locked(variants_lock()):
+                prune_variants(<photo id of the branch>, keep=displayed)
+```
+
+using `target.id` in the replay branch and `picked` in the selection branch. Both run only after `set_default` returned, so a rejected set (which raises) prunes nothing.
+
+Update the callers of `resolve_variant`: `describe` takes `library` (it already does) and computes `variant = current_variant(ctx.config, library, photo)`; `_rating_items` (hidden-photos plan) uses `current_variant(ctx.config, library, photo) or library.get(photo)`.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run --frozen pytest -q`
-Expected: all pass. `test_display_path_prefers_variant...` from Task 1 was renamed; `test_file_symlink_observe_and_previous_preserve_history` must still pass (its ids are in the library, edits are unset, so `replay_path` returns the library entry).
+Expected: all pass. `test_file_symlink_observe_and_previous_preserve_history` still passes (its ids are in the library, edits are unset, so `replay_path` returns the library entry).
 
 - [ ] **Step 5: Verify and commit**
 
 Run: `just verify`
 
 ```bash
-tasks done <step-4-id> "variant cache with keyed sidecar; ensure_variant on selection and replay"
+tasks done <step-4-id> "keyed variant cache, ensure_variant on selection and replay, prune after a successful set"
 git add bin/walictl tests/test_walictl.py tasks
-git commit -m "feat(walictl): render variants lazily on selection"
+git commit -m "feat(walictl): render variants lazily into keyed cache paths"
 ```
 
 ---
@@ -956,7 +1099,7 @@ git commit -m "feat(walictl): render variants lazily on selection"
 - Test: `tests/test_walictl.py`
 
 **Interfaces:**
-- Produces: `walictl variant show [<id>] --json` → `{"ok": true, "id", "edited": bool, "recipe": {full effective values}, "variant_path": str|null}`; `walictl variant preview [<id>] --set k=v ...` prints the preview path; `walictl variant apply [<id>] --set k=v ...` prints `applied <id>` (or `reset <id>` when the settings are all defaults); `walictl variant reset [<id>]` prints `reset <id>`. `update_history_path(photo_id, displayed_before, new_path, now)` reconciles then rewrites the current entry's path under the already-held history lock.
+- Produces: `walictl variant show [<id>] --json` → `{"ok": true, "id", "edited": bool, "recipe": {full effective values}, "variant_path": str|null}`; `walictl variant preview [<id>] --set k=v ...` prints the preview path; `walictl variant apply [<id>] --set k=v ...` prints `applied <id>` (or `reset <id>` when the settings are all defaults); `walictl variant reset [<id>]` prints `reset <id>`. `update_history_path(displayed_before, photo_id, new_path, now)` reconciles then rewrites the current entry's path under the already-held history lock. `prune_previews(photo_id, keep)` removes the other files in `preview_dir(photo_id)` by listing it.
 - Consumes: Tasks 1–4, `locked`, `history_lock`, `History`, `reconcile`, `Noctalia`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -968,31 +1111,45 @@ def test_variant_commands_require_edits_file(walictl: ModuleType, env: dict[str,
         assert (code, stderr) == (1, "config key edits_file is required\n"), argv
 
 
-def test_variant_show_reports_effective_recipe(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia) -> None:
+def test_variant_show_reports_effective_recipe(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path) -> None:
     enable_edits(env)
     payload = json.loads(run_cli(walictl, ["variant", "show", "--json"])[1])
     assert payload == {"ok": True, "id": "PXL_20210608_111152739", "edited": False, "recipe": walictl.RECIPE_DEFAULTS, "variant_path": None}
     recipe_for(walictl, env, "PXL_20220402_162957459", {"rotate": 90, "anchor": "top"})
     payload = json.loads(run_cli(walictl, ["variant", "show", "PXL_20220402_162957459", "--json"])[1])
     assert payload["edited"] is True and payload["recipe"] == {**walictl.RECIPE_DEFAULTS, "rotate": 90, "anchor": "top"}
-    assert payload["variant_path"] is None, "show never renders"
+    assert payload["variant_path"] is None and magick_calls(fake_magick) == [], "show never renders"
 
 
-def test_variant_preview_writes_hashed_file_and_prunes(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path) -> None:
+def test_variant_preview_writes_keyed_file_and_prunes(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path) -> None:
     enable_edits(env)
+    photo = "PXL_20210608_111152739"
     code, first, stderr = run_cli(walictl, ["variant", "preview", "--set", "brightness=10"])
     assert (code, stderr) == (0, "")
     first_path = Path(first.strip())
-    assert first_path.parent == env["cache_home"] / "wali" / "preview"
-    assert first_path.name.startswith("PXL_20210608_111152739.") and first_path.suffix == ".jpg"
-    assert magick_calls(fake_magick)[-1][:4] == [str(env["wallpapers"] / "PXL_20210608_111152739.jpg"), "-resize", "560x", "-brightness-contrast"]
+    assert first_path.parent == walictl.preview_dir(photo) and first_path.suffix == ".jpg"
+    assert magick_calls(fake_magick)[-1][:4] == [str(env["wallpapers"] / f"{photo}.jpg"), "-resize", "560x", "-brightness-contrast"]
+    assert magick_calls(fake_magick)[-1][-1].endswith(".tmp.jpg"), "previews render to a temp file first"
     second_path = Path(run_cli(walictl, ["variant", "preview", "--set", "brightness=20"])[1].strip())
     assert second_path != first_path
-    assert sorted(p.name for p in first_path.parent.iterdir()) == [second_path.name], "older previews for the id are pruned"
+    assert [p.name for p in first_path.parent.iterdir()] == [second_path.name], "older previews for the id are pruned"
     assert Path(run_cli(walictl, ["variant", "preview", "--set", "brightness=20"])[1].strip()) == second_path
     assert len(magick_calls(fake_magick)) == 2, "an existing preview is reused"
     code, _, stderr = run_cli(walictl, ["variant", "preview", "--set", "rotate=45"])
     assert (code, stderr) == (1, "rotate must be one of 0, 90, 180, 270\n")
+
+
+def test_variant_preview_failure_is_never_reused(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    enable_edits(env)
+    monkeypatch.setenv("FAKE_MAGICK_PARTIAL", "1")
+    code, _, stderr = run_cli(walictl, ["variant", "preview", "--set", "blur=2"])
+    assert (code, stderr) == (1, "magick failed: died\n")
+    assert not list(walictl.preview_dir("PXL_20210608_111152739").iterdir()), "a partial preview is removed"
+    monkeypatch.delenv("FAKE_MAGICK_PARTIAL")
+    assert run_cli(walictl, ["variant", "preview", "--set", "blur=2"])[0] == 0
+    assert len(magick_calls(fake_magick)) == 2, "the retry renders again"
 
 
 def test_variant_preview_anchor_needs_output(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path) -> None:
@@ -1013,17 +1170,30 @@ def test_variant_apply_renders_saves_and_resets_displayed_photo(
     assert (code, stdout, stderr) == (0, f"applied {picked}\n", "")
     edits = walictl.EditsStore.load(env["wallpapers"].parent / "edits.json")
     assert edits.get(picked) == {"rotate": 90, "brightness": 5}
-    assert noctalia.default == walictl.variant_path(picked)
+    first = noctalia.default
+    assert first.stem == picked and first.is_relative_to(walictl.variant_dir(picked))
     history = load_history(walictl)
     assert [e.id for e in history.entries] == ["PXL_20210608_111152739", picked] and history.cursor == 1
-    assert history.entries[1].path == str(walictl.variant_path(picked)), "the entry's path follows the variant"
+    assert history.entries[1].path == str(first), "the entry's path follows the variant"
     assert run_cli(walictl, ["observe"])[1] == f"unchanged {picked}\n", "no duplicate observed entry"
+    # a second apply with a different recipe renders to a different path, sets it, and prunes the first
+    code, stdout, _ = run_cli(walictl, ["variant", "apply", "--set", "rotate=180"])
+    assert (code, stdout) == (0, f"applied {picked}\n")
+    second = noctalia.default
+    assert second != first and second.stem == picked
+    assert noctalia.calls[-1] == ["noctalia", "msg", "wallpaper-set", str(second)]
+    assert renders_of(walictl, picked) == [second] and not first.exists()
+    assert load_history(walictl).entries[1].path == str(second)
+    # applying the same recipe again re-sets without rendering
+    calls = len(magick_calls(fake_magick))
+    assert run_cli(walictl, ["variant", "apply", "--set", "rotate=180"])[0] == 0
+    assert len(magick_calls(fake_magick)) == calls and noctalia.calls[-1] == ["noctalia", "msg", "wallpaper-set", str(second)]
     # apply with all defaults behaves as reset
     code, stdout, _ = run_cli(walictl, ["variant", "apply", "--set", "rotate=0"])
     assert (code, stdout) == (0, f"reset {picked}\n")
     assert walictl.EditsStore.load(env["wallpapers"].parent / "edits.json").get(picked) is None
     assert noctalia.default == env["wallpapers"] / f"{picked}.jpg"
-    assert not walictl.variant_path(picked).exists()
+    assert renders_of(walictl, picked) == []
     assert load_history(walictl).entries[1].path == str(env["wallpapers"] / f"{picked}.jpg")
 
 
@@ -1034,8 +1204,10 @@ def test_variant_apply_on_another_photo_does_not_touch_the_wallpaper(
     code, stdout, _ = run_cli(walictl, ["variant", "apply", "PXL_20220402_162957459", "--set", "anchor=bottom"])
     assert (code, stdout) == (0, "applied PXL_20220402_162957459\n")
     assert noctalia.default == env["wallpapers"] / "PXL_20210608_111152739.jpg"
-    assert walictl.variant_path("PXL_20220402_162957459").exists()
+    assert len(renders_of(walictl, "PXL_20220402_162957459")) == 1
     assert not any(call[2] == "wallpaper-set" for call in noctalia.calls)
+    assert run_cli(walictl, ["variant", "apply", "PXL_20220402_162957459", "--set", "anchor=top"])[0] == 0
+    assert len(renders_of(walictl, "PXL_20220402_162957459")) == 1, "a photo that is not displayed is pruned at once"
     code, _, stderr = run_cli(walictl, ["variant", "apply", "nope", "--set", "rotate=90"])
     assert (code, stderr) == (1, "unknown photo id: nope\n")
 
@@ -1047,15 +1219,15 @@ def test_variant_apply_failures_leave_state_consistent(
     edits = env["wallpapers"].parent / "edits.json"
     photo = "PXL_20210608_111152739"
     assert run_cli(walictl, ["variant", "apply", "--set", "rotate=90"])[0] == 0
-    old_key = walictl.sidecar_path(photo).read_text()
+    first = noctalia.default
     # render failure: nothing saved, nothing published
     monkeypatch.setenv("FAKE_MAGICK_FAIL", "1")
     code, _, stderr = run_cli(walictl, ["variant", "apply", "--set", "rotate=180"])
     assert (code, stderr) == (1, "magick failed: boom\n")
     assert walictl.EditsStore.load(edits).get(photo) == {"rotate": 90}
-    assert walictl.sidecar_path(photo).read_text() == old_key
+    assert renders_of(walictl, photo) == [first]
     monkeypatch.delenv("FAKE_MAGICK_FAIL")
-    # recipe-save failure: temp discarded, old cache and recipe intact
+    # recipe-save failure: temp discarded, old render and recipe intact
     edits.chmod(0o444)
     edits.parent.chmod(0o555)
     try:
@@ -1065,33 +1237,38 @@ def test_variant_apply_failures_leave_state_consistent(
         edits.chmod(0o644)
     assert code == 1 and "edits.json" in stderr
     assert walictl.EditsStore.load(edits).get(photo) == {"rotate": 90}
-    assert walictl.sidecar_path(photo).read_text() == old_key
-    assert not list(walictl.variants_dir().glob(".render.*"))
-    # rejected wallpaper change: recipe and new cache stay, error reported
+    assert renders_of(walictl, photo) == [first]
+    assert not list(walictl.variant_dir(photo).rglob("*.tmp.jpg"))
+    # rejected wallpaper change: recipe and new render stay, the old render is not pruned
     noctalia.reject_set = "busy"
     code, _, stderr = run_cli(walictl, ["variant", "apply", "--set", "rotate=270"])
     assert code == 1 and "busy" in stderr
     assert walictl.EditsStore.load(edits).get(photo) == {"rotate": 270}
-    assert walictl.sidecar_path(photo).read_text() != old_key
+    assert len(renders_of(walictl, photo)) == 2 and first.exists()
+    assert noctalia.default == first
 
 
-def test_variant_reset_keeps_cache_when_wallpaper_change_is_rejected(
+def test_variant_reset_keeps_renders_when_wallpaper_change_is_rejected(
     walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path
 ) -> None:
     enable_edits(env)
     photo = "PXL_20210608_111152739"
     assert run_cli(walictl, ["variant", "apply", "--set", "rotate=90"])[0] == 0
+    rendered = noctalia.default
     noctalia.reject_set = "busy"
     code, _, stderr = run_cli(walictl, ["variant", "reset"])
     assert code == 1 and "busy" in stderr
     assert walictl.EditsStore.load(env["wallpapers"].parent / "edits.json").get(photo) is None
-    assert walictl.variant_path(photo).exists(), "the displayed file is never deleted before a replacement succeeds"
+    assert rendered.exists(), "the displayed file is never deleted before a replacement succeeds"
+    # a second rejected change, this time a selection, still deletes nothing
+    assert run_cli(walictl, ["later"])[0] == 1
+    assert rendered.exists()
     noctalia.reject_set = None
-    # the next selection of the photo resolves to the library file and cleans up
+    # the next successful selection of the photo resolves to the library file and prunes
     assert run_cli(walictl, ["later"])[0] == 0
     assert run_cli(walictl, ["earlier"])[0] == 0
     assert noctalia.default == env["wallpapers"] / f"{photo}.jpg"
-    assert not walictl.variant_path(photo).exists()
+    assert renders_of(walictl, photo) == []
     code, _, stderr = run_cli(walictl, ["variant", "reset"])
     assert (code, stderr) == (1, f"no recipe: {photo}\n")
 
@@ -1165,12 +1342,20 @@ def update_history_path(displayed_before: Path, photo: str, new_path: Path, now:
     history.save(path)
 
 
+def prune_previews(photo: str, keep: Path) -> None:
+    """Remove the other previews of the photo. Caller holds variants.lock."""
+    for stale in preview_dir(photo).iterdir():
+        if stale != keep:
+            stale.unlink()
+
+
 def cmd_variant_show(ctx: Context, args: argparse.Namespace) -> int:
     edits = _edits(ctx)
     photo = args.photo_id or _current_id(ctx)
+    library = scan_library(ctx.config.wallpaper_dir)
     with locked(edits_lock()):
         recipe = EditsStore.load(edits.file).get(photo)
-    variant = resolve_variant(ctx.config, photo)
+    variant = current_variant(ctx.config, library, photo)
     payload = {
         "ok": True,
         "id": photo,
@@ -1190,19 +1375,18 @@ def cmd_variant_preview(ctx: Context, args: argparse.Namespace) -> int:
     output_required(recipe, edits.output)
     source = _library_source(scan_library(ctx.config.wallpaper_dir), photo)
     key = render_key(recipe, edits.output, source_identity(source))
-    dest = previews_dir() / f"{photo}.{key[:8]}.jpg"
-    if not dest.is_file():
-        previews_dir().mkdir(parents=True, exist_ok=True)
-        render(source, recipe, edits.output, dest, PREVIEW_WIDTH)
-    for stale in previews_dir().glob(f"{photo}.*.jpg"):
-        if stale != dest:
-            stale.unlink(missing_ok=True)
+    dest = preview_dir(photo) / f"{key[:8]}.jpg"
+    with locked(variants_lock()):
+        if not dest.is_file():
+            tmp = render_to_temp(source, recipe, edits.output, dest.parent, PREVIEW_WIDTH)
+            os.replace(tmp, dest)
+        prune_previews(photo, keep=dest)
     ctx.out.write(f"{dest}\n")
     return 0
 
 
 def _reset_variant(ctx: Context, edits: EditsConfig, photo: str, displayed: Path, library: dict[str, Path]) -> None:
-    """Caller holds the history lock. Order: recipe → wallpaper → history → cache."""
+    """Caller holds the history lock. Order: recipe → wallpaper → history → prune (only after success)."""
     with locked(edits_lock()):
         store = EditsStore.load(edits.file)
         if not store.remove(photo):
@@ -1210,10 +1394,10 @@ def _reset_variant(ctx: Context, edits: EditsConfig, photo: str, displayed: Path
         store.save(edits.file)
     if photo == photo_id(displayed):
         original = _library_source(library, photo)
-        ctx.noctalia.set_default(original)
+        ctx.noctalia.set_default(original)  # raises on rejection: the prune below never runs
         update_history_path(displayed, photo, original, utc_now())
     with locked(variants_lock()):
-        delete_variant(photo)
+        prune_variants(photo, keep=None)
     ctx.out.write(f"reset {photo}\n")
 
 
@@ -1230,21 +1414,28 @@ def cmd_variant_apply(ctx: Context, args: argparse.Namespace) -> int:
             _reset_variant(ctx, edits, photo, displayed, library)
             return 0
         key = render_key(recipe, edits.output, source_identity(source))
+        target = variant_file(photo, key)
+        tmp: Path | None = None
         with locked(variants_lock()):
-            tmp = render_to_temp(source, recipe, edits.output)
+            if not target.is_file():
+                tmp = render_to_temp(source, recipe, edits.output, target.parent)
         try:
             with locked(edits_lock()):
                 store = EditsStore.load(edits.file)
                 store.set(photo, recipe, utc_now())
                 store.save(edits.file)
         except BaseException:
-            tmp.unlink(missing_ok=True)
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
             raise
-        with locked(variants_lock()):
-            target = publish_variant(tmp, photo, key)
+        if tmp is not None:
+            with locked(variants_lock()):
+                publish_variant(tmp, photo, key)
         if photo == photo_id(displayed):
-            ctx.noctalia.set_default(target)
+            ctx.noctalia.set_default(target)  # raises on rejection: the prune below never runs
             update_history_path(displayed, photo, target, utc_now())
+        with locked(variants_lock()):
+            prune_variants(photo, keep=target)
     ctx.out.write(f"applied {photo}\n")
     return 0
 
@@ -1277,17 +1468,17 @@ Register `"variant": cmd_variant` in `COMMANDS`. In `build_parser`, after the `n
     variant = subparsers.add_parser("variant", help="per-photo adjustments rendered into a cached variant")
     actions = variant.add_subparsers(dest="action", required=True)
     show = actions.add_parser("show", help="the photo's effective recipe")
-    show.add_argument("photo_id", nargs="?", default=None)
+    show.add_argument("photo_id", nargs="?", default=None, type=photo_id_arg)
     show.add_argument("--json", action="store_true", required=True)
     for name, help_text in (
         ("preview", "render a 560px-wide preview of the given settings; print its path"),
         ("apply", "replace the recipe with the given settings, render, and show it when displayed"),
     ):
         sub = actions.add_parser(name, help=help_text)
-        sub.add_argument("photo_id", nargs="?", default=None)
+        sub.add_argument("photo_id", nargs="?", default=None, type=photo_id_arg)
         sub.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
     reset = actions.add_parser("reset", help="remove the recipe and its cached render")
-    reset.add_argument("photo_id", nargs="?", default=None)
+    reset.add_argument("photo_id", nargs="?", default=None, type=photo_id_arg)
 ```
 
 `write_json_atomic` raising `PermissionError` (an `OSError`) is caught by `main` and printed with the edits path in the message, which the save-failure test checks with `"edits.json" in stderr`.
@@ -1303,8 +1494,8 @@ In `docs/noctalia-wallpaper-switcher.md`, add to the Files table:
 
 ```markdown
 | `<edits_file>` | Per-photo edit recipes (`edits.json`), synced beside favorites; optional |
-| `$XDG_CACHE_HOME/wali/variants/` | Rendered variants and their `.recipe` sidecars, per host |
-| `$XDG_CACHE_HOME/wali/preview/` | Downscaled previews for the panel's edit mode |
+| `$XDG_CACHE_HOME/wali/variants/<id>/<key>/` | One rendered variant per recipe/output/source key, per host |
+| `$XDG_CACHE_HOME/wali/preview/<id>/` | Downscaled previews for the panel's edit mode |
 ```
 
 to the commands block:
@@ -1313,7 +1504,7 @@ to the commands block:
 walictl variant show [<id>] --json          # effective recipe and cached variant path
 walictl variant preview [<id>] --set k=v..  # 560px preview of the settings; prints its path
 walictl variant apply [<id>] --set k=v..    # replace the recipe, render, show it when displayed
-walictl variant reset [<id>]                # drop the recipe and its render
+walictl variant reset [<id>]                # drop the recipe and its renders
 ```
 
 and a paragraph after the hidden-photos one:
@@ -1324,11 +1515,12 @@ Quick edits are recipes: `rotate` (0/90/180/270), `brightness`, `contrast`
 `bloom` (0..100), and `anchor` (center/top/bottom/left/right, a crop to the
 output aspect from that edge; needs `[edits] output = "WxH"` in the host
 config). Set `edits_file` to turn them on. `walictl` renders a recipe with
-`magick` into a per-host cache the first time the photo is selected there and
-whenever the recipe, the output size, or the library file changes; the cache
-is the file Noctalia displays. `apply` and `reset` re-set the wallpaper when
-the photo is on screen and rewrite its history entry's path, so history keeps
-one entry per photo.
+`magick` into a per-host cache the first time the photo is selected there;
+each distinct recipe, output size, or library file gets its own keyed path,
+because Noctalia ignores a wallpaper change to the path it already shows.
+Stale renders are removed only after a wallpaper change succeeds. `apply` and
+`reset` re-set the wallpaper when the photo is on screen and rewrite its
+history entry's path, so history keeps one entry per photo.
 ```
 
 Also document the config keys in the same file's config text: after the `[sampling]` description, add `edits_file = "~/d/linux/backgrounds/edits.json"` and `[edits] output = "3440x1440"` as an example.
@@ -1338,7 +1530,7 @@ Also document the config keys in the same file's config text: after the `[sampli
 Run: `just verify`
 
 ```bash
-tasks done <step-5-id> "walictl variant show/preview/apply/reset with lock order and history path updates; docs"
+tasks done <step-5-id> "walictl variant show/preview/apply/reset with keyed paths, lock order, and deferred pruning; docs"
 git add bin/walictl tests/test_walictl.py docs/noctalia-wallpaper-switcher.md tasks
 git commit -m "feat(walictl): variant show, preview, apply, and reset"
 ```
@@ -1387,7 +1579,7 @@ def test_preview_matches_downscaled_full_render(walictl: ModuleType, tmp_path: P
 
 - [ ] **Step 2: Run it**
 
-Run: `uv run --frozen pytest -q tests/test_walictl.py -k parity -rs`
+Run: `uv run --frozen pytest -q tests/test_walictl.py -k preview_matches_downscaled_full_render -rs`
 Expected: PASS on this machine (`magick` installed). If the RMSE lands above 0.03, first confirm the sizes match (a one-pixel height difference from rounding shows up as a size assertion, not a metric); a real divergence means the preview's scaled `blur`/bloom radius or the crop box is off in `magick_argv`, and the fix goes there.
 
 - [ ] **Step 3: Verify and commit**
@@ -1562,7 +1754,7 @@ git commit -m "feat(panel): edit-mode logic and manifest key"
 
 **Interfaces:**
 - Consumes: Task 7's `Logic` API; `state`, `render`, `refresh`, `run`, `resultError`, `trimmed`, `utilityButton`, `frame`, `frameHeight` from `panel.luau`; `ui.slider`.
-- Produces: `state.edit = nil | { id, recipe, generation, previewPath, pending }`; an `adjust` utility button (key `a`); in edit mode the frame is 200 px and shows `state.edit.previewPath or state.current.path`; a `ui.scroll` of slider rows (`key = "slider:<key>"`), rotate buttons (`rotate:<deg>`), anchor buttons (`anchor:<name>`), and `reset` / `cancel` / `apply` buttons.
+- Produces: `state.edit = nil | { id, recipe, generation, previewPath, pending, seeded, previewing, edited }`; an `adjust` utility button (key `a`); in edit mode the frame is 200 px and shows `state.edit.previewPath or state.current.path`; a `ui.scroll` of slider rows (`key = "slider:<key>"`), rotate buttons (`rotate:<deg>`), anchor buttons (`anchor:<name>`), and `reset` / `cancel` / `apply` buttons. Enabled rules: draft controls (sliders, rotate, anchor) are enabled once the draft is seeded and stay enabled while a preview renders (`seeded and (not busy or previewing)`), so a change during a preview is the coalesced follow-up; Apply and Reset need the panel idle (`seeded and not busy`); everything but Cancel is disabled while `variant show` loads or an apply/reset runs.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1608,6 +1800,11 @@ assert(button(rendered, "previous") == nil, "navigation is hidden in edit mode")
 slider(rendered, "slider:brightness").props.onDragEnd(20)
 equal(runs[#runs].command, Shell.command(Logic.variantCommand("preview", "PXL_20260820_000000000",
   { rotate = 90, brightness = 20, anchor = "top" })))
+-- draft controls stay usable while the preview renders; apply/reset wait for idle
+assert(slider(rendered, "slider:blur").props.enabled, "sliders must stay enabled during a preview")
+assert(button(rendered, "rotate:180").props.enabled, "toggles must stay enabled during a preview")
+assert(not button(rendered, "apply").props.enabled, "apply waits for the preview")
+assert(not button(rendered, "reset").props.enabled, "reset waits for the preview")
 -- a second change while the preview runs is coalesced into one follow-up request
 slider(rendered, "slider:blur").props.onDragEnd(3)
 assert(button(rendered, "rotate:180")).props.onClick()
@@ -1629,9 +1826,12 @@ for _, text in ipairs(labels(rendered)) do if text == "magick failed: boom" then
 assert(sawError)
 
 -- apply sends the pinned id and the full state, then refreshes and leaves edit mode
+assert(button(rendered, "apply").props.enabled, "apply is enabled when idle")
 assert(button(rendered, "apply")).props.onClick()
 equal(runs[#runs].command, Shell.command(Logic.variantCommand("apply", "PXL_20260820_000000000",
   { rotate = 180, brightness = 20, blur = 3, noise = 10, anchor = "top" })))
+assert(not slider(rendered, "slider:blur").props.enabled, "controls are disabled while apply runs")
+assert(button(rendered, "cancel").props.enabled, "cancel is always available")
 runs[#runs].callback(success("applied PXL_20260820_000000000"))
 equal(runs[#runs].command, Shell.command(commands.current))
 runs[#runs].callback(success("with source"))
@@ -1640,7 +1840,9 @@ assert(button(rendered, "previous"), "navigation returns")
 
 -- cancel invalidates a late preview
 onKey("a", true)
+assert(not slider(rendered, "slider:contrast").props.enabled, "controls are disabled until the draft is seeded")
 runs[#runs].callback(success("variant fresh"))
+assert(slider(rendered, "slider:contrast").props.enabled)
 assert(not assert(button(rendered, "reset")).props.enabled, "reset is disabled without a recipe")
 slider(rendered, "slider:contrast").props.onDragEnd(5)
 local late = runs[#runs]
@@ -1651,12 +1853,14 @@ equal(find(rendered, "image").props.path, "/wall/current.jpg", "a late preview m
 
 -- the pinned id survives a wallpaper change made elsewhere
 onKey("a", true)
-runs[#runs].callback(success("variant fresh"))
-state.current = { ok = true, id = "OTHER", path = "/wall/other.jpg", favorite = false, hidden = false,
+runs[#runs].callback(success("variant shown"))
+__wali_state.current = { ok = true, id = "OTHER", path = "/wall/other.jpg", favorite = false, hidden = false,
   history = { cursor = 0, length = 1 } }
 slider(rendered, "slider:contrast").props.onDragEnd(5)
-equal(runs[#runs].command, Shell.command(Logic.variantCommand("preview", "PXL_20260820_000000000", { contrast = 5 })))
+equal(runs[#runs].command, Shell.command(Logic.variantCommand("preview", "PXL_20260820_000000000",
+  { rotate = 90, contrast = 5, anchor = "top" })))
 runs[#runs].callback(success("/cache/preview/c.jpg\n"))
+assert(button(rendered, "reset").props.enabled, "reset is enabled for an edited photo when idle")
 assert(button(rendered, "reset")).props.onClick()
 equal(runs[#runs].command, Shell.command(Logic.variantCommand("reset", "PXL_20260820_000000000")))
 runs[#runs].callback(success("reset PXL_20260820_000000000"))
@@ -1675,7 +1879,7 @@ onKey("a", true)
 assert(find(rendered, "scroll") == nil, "a toggles edit mode off")
 ```
 
-`state` must be reachable from the test for the pinned-id case: `panel.luau` declares it `local`. Expose it for tests only by adding, at the end of `panel.luau`, `_G.__wali_state = state` guarded by `if _G.WALI_TEST then ... end`, and set `WALI_TEST = true` in `plugin_test.lua` before `dofile(here .. "panel.luau")`; in the test use `__wali_state.current = {...}` instead of `state.current`.
+`state` must be reachable from the test for the pinned-id case: `panel.luau` declares it `local`. Expose it for tests only by adding, at the end of `panel.luau`, `_G.__wali_state = state` guarded by `if _G.WALI_TEST then ... end`, and set `WALI_TEST = true` in `plugin_test.lua` before `dofile(here .. "panel.luau")`.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -1697,6 +1901,7 @@ local requestPreview
 
 local function finishPreview(generation, result)
   state.busy = false
+  if state.edit then state.edit.previewing = false end
   if state.edit == nil or state.edit.generation ~= generation then
     -- Cancelled or reopened on another photo while this preview ran.
     render()
@@ -1725,19 +1930,21 @@ requestPreview = function()
     return
   end
   state.busy = true
+  state.edit.previewing = true
   local generation = state.edit.generation
   render()
   if not run(Logic.variantCommand("preview", state.edit.id, editRecipe()), function(result)
     finishPreview(generation, result)
   end) then
     state.busy = false
+    state.edit.previewing = false
     state.errorText = "Failed to launch walictl variant preview"
     render()
   end
 end
 
 local function setRecipeValue(key, value)
-  if state.edit == nil then return end
+  if state.edit == nil or not state.edit.seeded then return end
   state.edit.recipe[key] = value
   requestPreview()
 end
@@ -1748,7 +1955,10 @@ local function enterEdit()
   if not state.current or not Logic.canStart(state.busy) then return end
   generationCounter = generationCounter + 1
   local id = state.current.id
-  state.edit = { id = id, recipe = {}, generation = generationCounter, previewPath = nil, pending = false, edited = false }
+  state.edit = {
+    id = id, recipe = {}, generation = generationCounter, previewPath = nil, pending = false,
+    seeded = false, previewing = false, edited = false,
+  }
   state.busy = true
   state.errorText = nil
   render()
@@ -1767,6 +1977,7 @@ local function enterEdit()
     else
       state.edit.recipe = payload.recipe
       state.edit.edited = payload.edited
+      state.edit.seeded = true
     end
     render()
   end)
@@ -1803,7 +2014,7 @@ local function finishVariantChange(action, result)
 end
 
 local function applyEdit()
-  if state.edit == nil or not Logic.canStart(state.busy) then return end
+  if state.edit == nil or not state.edit.seeded or not Logic.canStart(state.busy) then return end
   state.busy = true
   render()
   local recipe = editRecipe()
@@ -1818,7 +2029,7 @@ local function applyEdit()
 end
 
 local function resetEdit()
-  if state.edit == nil or not Logic.canStart(state.busy) then return end
+  if state.edit == nil or not state.edit.seeded or not Logic.canStart(state.busy) then return end
   state.busy = true
   render()
   local launched = run(Logic.variantCommand("reset", state.edit.id), function(result)
@@ -1868,20 +2079,24 @@ local function choiceRow(label, key, choices, enabled)
   return ui.row({ align = "center", gap = 4 }, buttons)
 end
 
-local function editControls(enabled)
+local function editControls()
+  local edit = state.edit
+  -- Draft controls stay live during a preview so changes coalesce; only apply/reset wait for idle.
+  local draftEnabled = edit.seeded and (not state.busy or edit.previewing)
+  local actionEnabled = edit.seeded and not state.busy
   local rows = {}
-  for _, spec in ipairs(Logic.sliders) do rows[#rows + 1] = sliderRow(spec, enabled) end
-  rows[#rows + 1] = choiceRow("Rotate", "rotate", Logic.rotations, enabled)
-  rows[#rows + 1] = choiceRow("Anchor", "anchor", Logic.anchors, enabled)
+  for _, spec in ipairs(Logic.sliders) do rows[#rows + 1] = sliderRow(spec, draftEnabled) end
+  rows[#rows + 1] = choiceRow("Rotate", "rotate", Logic.rotations, draftEnabled)
+  rows[#rows + 1] = choiceRow("Anchor", "anchor", Logic.anchors, draftEnabled)
   return ui.column({ gap = 10, flexGrow = 1 }, {
     ui.scroll({ flexGrow = 1, gap = 6 }, rows),
     ui.row({ align = "center", gap = 8 }, {
       ui.button({ key = "reset", text = "Reset", variant = "destructive", controlSize = "sm",
-        enabled = enabled and state.edit.edited, tooltip = "Remove the recipe and its render", onClick = resetEdit }),
+        enabled = actionEnabled and edit.edited, tooltip = "Remove the recipe and its renders", onClick = resetEdit }),
       ui.spacer({ flexGrow = 1 }),
       ui.button({ key = "cancel", text = "Cancel", variant = "ghost", controlSize = "sm", enabled = true, onClick = leaveEdit }),
       ui.button({ key = "apply", text = "Apply", variant = "primary", controlSize = "sm",
-        enabled = enabled and not Logic.isDefaultRecipe(state.edit.recipe) or (enabled and state.edit.edited),
+        enabled = actionEnabled and (not Logic.isDefaultRecipe(edit.recipe) or edit.edited),
         tooltip = "Save the recipe and render it", onClick = applyEdit }),
     }),
   })
@@ -1899,7 +2114,7 @@ render = function()
       frame(enabled),
       ui.label({ text = Logic.captionDetail(current, state.errorText).text, fontSize = 12, fontFamily = "monospace",
         color = Logic.captionDetail(current, state.errorText).color, maxLines = 2 }),
-      editControls(enabled),
+      editControls(),
     }))
     return
   end
