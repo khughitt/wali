@@ -50,19 +50,19 @@ local invalid, invalidError = Logic.validateCurrent({ source_path = "/wall/sourc
 assert(invalid == nil and type(invalidError) == "string")
 
 for _, field in ipairs({ "date", "display_date", "source_path", "variant_path" }) do
-  local candidate = { ok = true, id = "x", path = "/p", favorite = false }
+  local candidate = { ok = true, id = "x", path = "/p", favorite = false, history = { cursor = 0, length = 1 } }
   candidate[field] = 42
   invalid, invalidError = Logic.validateCurrent(candidate)
   assert(invalid == nil and type(invalidError) == "string" and invalidError:find(field, 1, true))
 end
 
 for _, field in ipairs({ "id", "path" }) do
-  local candidate = { ok = true, id = "x", path = "/p", favorite = false }
+  local candidate = { ok = true, id = "x", path = "/p", favorite = false, history = { cursor = 0, length = 1 } }
   candidate[field] = nil
   invalid, invalidError = Logic.validateCurrent(candidate)
   assert(invalid == nil and type(invalidError) == "string" and invalidError:find(field, 1, true))
 end
-local invalidFavorite, favoriteError = Logic.validateCurrent({ ok = true, id = "x", path = "/p", favorite = "yes" })
+local invalidFavorite, favoriteError = Logic.validateCurrent({ ok = true, id = "x", path = "/p", favorite = "yes", history = { cursor = 0, length = 1 } })
 assert(invalidFavorite == nil and favoriteError:find("favorite", 1, true))
 
 for _, action in ipairs({ "previous", "next", "random", "favorite" }) do
@@ -85,6 +85,24 @@ equal(Logic.captionDetail(payload, "walictl next exited 1"), { text = "walictl n
 equal(Logic.captionDetail(nil, nil), { text = "", color = "on_surface_variant" })
 equal(Logic.captionDetail(nil, "boom"), { text = "boom", color = "error" })
 
+equal(Logic.historyLabel(payload), "4/4")
+equal(Logic.historyLabel({ ok = true, id = "x", path = "/p", favorite = false, history = { cursor = 0, length = 3 } }), "1/3")
+equal(Logic.historyLabel({ ok = true, id = "x", path = "/p", favorite = false, history = { cursor = nil, length = 0 } }), "")
+equal(Logic.historyLabel(nil), "")
+assert(Logic.nextSamples(payload), "cursor at the end means Next samples")
+assert(not Logic.nextSamples({ ok = true, id = "x", path = "/p", favorite = false, history = { cursor = 0, length = 3 } }))
+assert(Logic.nextSamples(nil))
+equal(Logic.nextTooltip(payload), "Next: sample (l / →)")
+equal(Logic.nextTooltip({ ok = true, id = "x", path = "/p", favorite = false, history = { cursor = 1, length = 3 } }), "Next (l / →)")
+
+local noHistory, noHistoryError = Logic.validateCurrent({ ok = true, id = "x", path = "/p", favorite = false })
+assert(noHistory == nil and noHistoryError:find("history", 1, true), "history must be required")
+for _, history in ipairs({ { cursor = "0", length = 1 }, { cursor = 0, length = "1" }, { cursor = 0 }, "3/4" }) do
+  local bad, badError = Logic.validateCurrent({ ok = true, id = "x", path = "/p", favorite = false, history = history })
+  assert(bad == nil and badError:find("history", 1, true), "malformed history must be rejected")
+end
+assert(Logic.validateCurrent({ ok = true, id = "x", path = "/p", favorite = false, history = { cursor = nil, length = 0 } }))
+
 local rendered
 local runs = {}
 local clipboardCalls = {}
@@ -100,7 +118,7 @@ noctalia = {
     decode = function(text)
       if text == "with source" then return payload end
       if text == "without source" then
-        return { ok = true, id = "n", path = "/wall/next.jpg", favorite = false }
+        return { ok = true, id = "n", path = "/wall/next.jpg", favorite = false, history = { cursor = 0, length = 1 } }
       end
       return nil, "invalid JSON"
     end,

@@ -27,6 +27,11 @@ function M.validateCurrent(payload)
       return nil, "walictl current returned an invalid " .. field .. " field"
     end
   end
+  local history = payload.history
+  if type(history) ~= "table" or type(history.length) ~= "number"
+    or (history.cursor ~= nil and type(history.cursor) ~= "number") then
+    return nil, "walictl current returned an invalid history field"
+  end
   return payload
 end
 
@@ -62,6 +67,20 @@ end
 function M.captionDetail(payload, errorText)
   if errorText ~= nil then return { text = errorText, color = "error" } end
   return { text = payload and payload.id or "", color = "on_surface_variant" }
+end
+
+function M.historyLabel(payload)
+  if payload == nil or payload.history.cursor == nil then return "" end
+  return tostring(payload.history.cursor + 1) .. "/" .. tostring(payload.history.length)
+end
+
+function M.nextSamples(payload)
+  if payload == nil or payload.history.cursor == nil then return true end
+  return payload.history.cursor + 1 >= payload.history.length
+end
+
+function M.nextTooltip(payload)
+  return M.nextSamples(payload) and "Next: sample (l / →)" or "Next (l / →)"
 end
 
 return M
