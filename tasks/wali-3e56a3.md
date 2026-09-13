@@ -6,7 +6,7 @@ priority: 2
 size: s
 complexity: mid
 created: 2026-09-12T09:35:40Z
-updated: 2026-09-12T16:45:57Z
+updated: 2026-09-13T16:33:37Z
 depends: []
 tags: [quick-add, noctalia, wallpaper]
 source: dots-9bfdc0
@@ -25,3 +25,4 @@ Second design pass on noctalia/plugins/wali-panel after pass 1 (dots-ba0168). Tr
 
 - 2026-09-12T09:35:40Z (main): moved from dots-9bfdc0
 - 2026-09-12T16:45:57Z (main): Complexity mid: existing panel flow and accepted changes bound the work, but styling choices and installed Noctalia support for context menus remain to be checked; plugin.toml currently declares API 22 while the requested menu needs 28+. Verify interaction behavior with plugin_test.lua and review the rendered panel.
+- 2026-09-13T16:33:37Z (main): 2026-09-13 user re-confirmed: drop the Refresh button; it does not seem helpful.
