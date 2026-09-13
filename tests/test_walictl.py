@@ -519,6 +519,26 @@ def test_weights_apply_favorite_and_month_density(walictl: ModuleType) -> None:
     assert result["IMG_1"] == pytest.approx(1.0)
 
 
+def test_weights_drop_hidden_but_keep_month_density(walictl: ModuleType) -> None:
+    ids = ["PXL_20210608_1", "PXL_20210609_1", "PXL_20210610_1"]
+    sampling = walictl.Sampling(exclude_recent=0, favorite_boost=0.0, period_boost=3.0)
+    result = walictl.weights(ids, ratings_of(walictl, favorites=("PXL_20210608_1",), hidden=("PXL_20210610_1",)), set(), sampling)
+    assert set(result) == {"PXL_20210608_1", "PXL_20210609_1"}
+    # Density is 1 favorite over 3 photos in June 2021, the hidden one included.
+    assert result["PXL_20210609_1"] == pytest.approx(2.0)
+
+
+def test_uniform_fallback_never_picks_hidden(walictl: ModuleType) -> None:
+    import random
+
+    sampling = walictl.Sampling(exclude_recent=2, favorite_boost=0.0, period_boost=0.0)
+    ratings = ratings_of(walictl, hidden=("PXL_20210610_1",))
+    weighted = walictl.weights(["PXL_20210608_1", "PXL_20210609_1", "PXL_20210610_1"], ratings, {"PXL_20210608_1", "PXL_20210609_1"}, sampling)
+    assert weighted == {"PXL_20210608_1": 0.0, "PXL_20210609_1": 0.0}
+    picks = {walictl.sample(weighted, random.Random(seed), lambda _: None) for seed in range(20)}
+    assert picks == {"PXL_20210608_1", "PXL_20210609_1"}
+
+
 def test_sample_is_deterministic_and_honours_zero_weights(walictl: ModuleType) -> None:
     import random
 
@@ -667,6 +687,14 @@ def test_next_at_end_samples(walictl: ModuleType, env: dict[str, Path], noctalia
     history = load_history(walictl)
     assert [e.origin for e in history.entries] == ["observed", "next"]
     assert history.cursor == 1
+
+
+def test_random_fails_when_every_photo_is_hidden(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia) -> None:
+    store = ratings_of(walictl, hidden=("PXL_20210608_111152739", "PXL_20210609_120000000", "PXL_20220402_162957459"))
+    store.save(env["favorites"])
+    code, stdout, stderr = run_cli(walictl, ["random", "--seed", "1"])
+    assert (code, stdout, stderr) == (1, "", "every photo is hidden\n")
+    assert noctalia.default == env["wallpapers"] / "PXL_20210608_111152739.jpg"
 
 
 def test_random_mid_history_discards_forward_entries(
@@ -935,6 +963,29 @@ def test_neighbors_fails_for_undated_current(walictl: ModuleType, env: dict[str,
     noctalia.default = undated
     code, _, stderr = run_cli(walictl, ["neighbors", "--json"])
     assert (code, stderr) == (1, "current wallpaper has no capture date: IMG_1\n")
+
+
+def test_capture_navigation_steps_over_hidden(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia) -> None:
+    ratings_of(walictl, hidden=("PXL_20210609_120000000",)).save(env["favorites"])
+    code, stdout, _ = run_cli(walictl, ["later"])
+    assert (code, stdout) == (0, "later: PXL_20220402_162957459\n")
+    code, stdout, _ = run_cli(walictl, ["earlier"])
+    assert (code, stdout) == (0, "earlier: PXL_20210608_111152739\n")
+    payload = json.loads(run_cli(walictl, ["neighbors", "--json"])[1])
+    assert [n["id"] for n in payload["after"]] == ["PXL_20220402_162957459"]
+
+
+def test_capture_navigation_from_a_hidden_current_still_has_neighbours(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia
+) -> None:
+    ratings_of(walictl, hidden=("PXL_20210609_120000000",)).save(env["favorites"])
+    noctalia.default = env["wallpapers"] / "PXL_20210609_120000000.jpg"
+    code, stdout, _ = run_cli(walictl, ["earlier"])
+    assert (code, stdout) == (0, "earlier: PXL_20210608_111152739\n")
+    noctalia.default = env["wallpapers"] / "PXL_20210609_120000000.jpg"
+    payload = json.loads(run_cli(walictl, ["neighbors", "--json"])[1])
+    assert payload["id"] == "PXL_20210609_120000000"
+    assert [n["id"] for n in payload["before"]] == ["PXL_20210608_111152739"]
 
 
 def test_capture_navigation_preserves_variants_and_browser_history(
