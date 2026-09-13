@@ -52,7 +52,8 @@ walictl import-favorites <favorites.txt>
 
 `Super+N` toggles the Wali Panel. Inside it, `h/l` or Left/Right walks history
 (the label beside Next shows the position, `cursor/length`); `k/j` or Up/Down
-selects the earlier/later photo by capture time. `f` toggles favorite, `e` edits,
+selects the earlier/later photo by capture time. `f` toggles favorite, `x` hides
+(or restores) the photo, `shift+x` opens the hidden list, `e` edits,
 `y` copies the source path (display path if no source exists), `r` or a click on
 the photo samples, `?` or `F1` toggles help, and Escape closes the panel.
 

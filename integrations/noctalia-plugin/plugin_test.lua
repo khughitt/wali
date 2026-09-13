@@ -87,6 +87,7 @@ equal(Logic.captionDetail(payload, nil), { text = "PXL_20260820_000000000", colo
 equal(Logic.captionDetail(payload, "walictl next exited 1"), { text = "walictl next exited 1", color = "error" })
 equal(Logic.captionDetail(nil, nil), { text = "", color = "on_surface_variant" })
 equal(Logic.captionDetail(nil, "boom"), { text = "boom", color = "error" })
+equal(Logic.captionDetail({ ok = true, id = "x", path = "/p", favorite = false, hidden = true, history = { cursor = 0, length = 1 } }, nil), { text = "x · hidden", color = "tertiary" })
 
 equal(Logic.historyLabel(payload), "4/4")
 equal(Logic.historyLabel({ ok = true, id = "x", path = "/p", favorite = false, history = { cursor = 0, length = 3 } }), "1/3")
@@ -152,6 +153,14 @@ noctalia = {
       if text == "without source" then
         return { ok = true, id = "n", path = "/wall/next.jpg", favorite = false, hidden = false, history = { cursor = 0, length = 1 } }
       end
+      if text == "hidden list" then
+        return { ok = true, hidden = {
+          { id = "PXL_20260101_000000000", added = "T", date = "2026-01-01", display_date = "January 1, 2026",
+            path = "/wall/a.jpg", exists = true },
+          { id = "gone", added = "T", exists = false },
+        } }
+      end
+      if text == "empty list" then return { ok = true, hidden = {} } end
       return nil, "invalid JSON"
     end,
   },
@@ -172,9 +181,16 @@ equal(widgetGlyph, "wallpaper")
 onClick()
 equal(toggledPanel, "khughitt/wali-panel:panel")
 
-panel = { render = function(tree) rendered = tree end }
+local menuRequests = {}
+panel = {
+  render = function(tree) rendered = tree end,
+  openContextMenu = function(request)
+    menuRequests[#menuRequests + 1] = request
+    return true
+  end,
+}
 ui = {}
-for _, name in ipairs({ "box", "button", "column", "glyph", "image", "label", "row", "spacer" }) do
+for _, name in ipairs({ "box", "button", "column", "glyph", "image", "label", "row", "scroll", "spacer" }) do
   local nodeType = name
   ui[nodeType] = function(props, children)
     return { type = nodeType, props = props or {}, children = children or {} }
@@ -268,7 +284,7 @@ equal(favorite.props.glyph, "heart-filled")
 equal(favorite.props.selected, true)
 assert(favorite.props.color == nil, "ui.button has no color prop; the host ignores it")
 assert(favorite.props.text == nil, "favorite must be glyph-only")
-for _, key in ipairs({ "previous", "next", "random", "edit", "copy" }) do
+for _, key in ipairs({ "previous", "next", "random", "edit", "copy", "hide" }) do
   local node = assert(button(rendered, key), key .. " button missing")
   assert(node.props.text == nil, key .. " must be glyph-only")
   assert(type(node.props.tooltip) == "string" and node.props.tooltip ~= "", key .. " needs a tooltip")
@@ -373,5 +389,111 @@ count = #clipboardCalls
 for _, chord in ipairs({ "f", "e", "y", "j", "k" }) do onKey(chord, true) end
 equal(#runs, runCount, "photo actions require loaded metadata")
 equal(#clipboardCalls, count)
+
+-- hide: left-click hides and refreshes even when the command fails
+onOpen({})
+runs[#runs].callback(success("with source"))
+local hide = assert(button(rendered, "hide"), "hide button missing")
+equal(hide.props.glyph, "eye-off")
+equal(hide.props.tooltip, "Hide (x) · right-click: hidden list")
+hide.props.onClick()
+equal(runs[#runs].command, Shell.command(commands.hide))
+runs[#runs].callback({ exitCode = 1, stdout = "hidden PXL_20260820_000000000\n", stderr = "every photo is hidden", timedOut = false })
+equal(runs[#runs].command, Shell.command(commands.current), "hide must refresh metadata even on failure")
+runs[#runs].callback(success("with source"))
+local detail = nil
+for _, text in ipairs(labels(rendered)) do if text == "every photo is hidden" then detail = text end end
+assert(detail, "replacement failure must stay visible after the refresh")
+
+-- a hidden current photo shows a restore action
+noctalia.json.decode = (function(original)
+  return function(text)
+    if text == "hidden current" then
+      local copy = {}
+      for k, v in pairs(payload) do copy[k] = v end
+      copy.hidden = true
+      return copy
+    end
+    return original(text)
+  end
+end)(noctalia.json.decode)
+onOpen({})
+runs[#runs].callback(success("hidden current"))
+local restore = assert(button(rendered, "hide"))
+equal(restore.props.glyph, "eye")
+equal(restore.props.tooltip, "Restore (x)")
+restore.props.onClick()
+equal(runs[#runs].command, Shell.command(Logic.unhideCommand("PXL_20260820_000000000")))
+runs[#runs].callback(success("unhidden PXL_20260820_000000000"))
+equal(runs[#runs].command, Shell.command(commands.current), "restore must refresh metadata")
+runs[#runs].callback(success("with source"))
+
+-- right-click opens the menu; its action opens the list view
+assert(button(rendered, "hide")).props.onRightClick()
+equal(#menuRequests, 1)
+equal(menuRequests[1].onActivate, "onHiddenMenu")
+equal(menuRequests[1].items[1].id, "show-hidden")
+onHiddenMenu("show-hidden", nil)
+assert(find(rendered, "image") == nil, "hidden view must replace the photo")
+equal(runs[#runs].command, Shell.command(commands.hidden))
+runs[#runs].callback(success("hidden list"))
+local scroll = assert(find(rendered, "scroll"), "hidden list must scroll")
+equal(#scroll.children, 2)
+local restoreRow = assert(button(rendered, "restore:gone"))
+restoreRow.props.onClick()
+equal(runs[#runs].command, Shell.command(Logic.unhideCommand("gone")))
+runs[#runs].callback(success("unhidden gone"))
+equal(runs[#runs].command, Shell.command(commands.current), "restore from the list must re-read current first")
+runs[#runs].callback(success("with source"))
+equal(runs[#runs].command, Shell.command(commands.hidden), "restore from the list must then reload the list")
+runs[#runs].callback(success("empty list"))
+assert(find(rendered, "scroll") == nil)
+local empty = false
+for _, text in ipairs(labels(rendered)) do if text == "Nothing hidden" then empty = true end end
+assert(empty, "empty list must say so")
+
+-- restoring the displayed photo from the list updates the caption
+onOpen({})
+runs[#runs].callback(success("hidden current"))
+onKey("shift+x", true)
+runs[#runs].callback(success("hidden list"))
+onHiddenMenu("show-hidden", nil) -- a second open while idle just reloads
+runs[#runs].callback(success("hidden list"))
+assert(button(rendered, "restore:PXL_20260101_000000000")).props.onClick()
+runs[#runs].callback(success("unhidden PXL_20260101_000000000"))
+equal(runs[#runs].command, Shell.command(commands.current))
+runs[#runs].callback(success("with source"))
+runs[#runs].callback(success("empty list"))
+onKey("x", true)
+assert(find(rendered, "image") ~= nil, "x must close the list view")
+equal(assert(button(rendered, "hide")).props.glyph, "eye-off", "caption state must follow the re-read current")
+
+-- opening the list while a command is busy is ignored, so no loader is left behind
+assert(button(rendered, "next")).props.onClick()
+local busyRuns = #runs
+onKey("shift+x", true)
+equal(#runs, busyRuns, "list must not load while busy")
+assert(find(rendered, "image") ~= nil, "view must not change while busy")
+onHiddenMenu("show-hidden", nil)
+assert(find(rendered, "image") ~= nil, "menu action must not change the view while busy")
+runs[#runs].callback(success())
+runs[#runs].callback(success("with source"))
+
+-- keyboard: shift+x toggles the list, x hides from the photo view and closes the list
+onKey("shift+x", true)
+assert(find(rendered, "image") == nil, "shift+x must open the list view")
+runs[#runs].callback(success("empty list"))
+onKey("shift+x", true)
+assert(find(rendered, "image") ~= nil, "shift+x must leave the list view")
+onKey("shift+x", true)
+runs[#runs].callback(success("empty list"))
+local hideCount = #runs
+onKey("x", true)
+equal(#runs, hideCount, "x in the list view closes it without hiding")
+assert(find(rendered, "image") ~= nil)
+onKey("x", true)
+equal(runs[#runs].command, Shell.command(commands.hide))
+runs[#runs].callback(success("hidden PXL_20260820_000000000"))
+runs[#runs].callback(success("with source"))
 
 print("Wali plugin tests passed")

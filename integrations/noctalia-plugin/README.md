@@ -24,6 +24,8 @@ In niri, `Super+N` toggles the panel and gives it keyboard focus immediately.
 | `j` / Down | Later photo by capture time |
 | `r` | Random photo (clicking the photo also samples) |
 | `f` | Toggle favorite |
+| `x` | Hide the photo (never sampled again); restore it when it is already hidden |
+| `shift+x` | Toggle the hidden list in the preview area |
 | `e` | Edit in GIMP |
 | `y` | Copy source path, or display path if unavailable |
 | `?` / `F1` | Toggle shortcut help in the preview area |
@@ -56,6 +58,14 @@ Next, and Random as ghost buttons on the left, with a `cursor/length` history
 position beside Next (its tooltip says "sample" when Next would leave history),
 and Edit, Copy, and keyboard help as quiet ghost buttons on the right. Colors
 come from Noctalia's palette, which it derives from the wallpaper.
+
+Hide (`eye-off`) sits with the other quiet buttons. A click runs `walictl hide`,
+which records the hide and samples a replacement; the panel re-reads the
+metadata whether or not the replacement succeeded, so a failure ("every photo
+is hidden") stays in the caption. Right-click the button, or press `shift+x`,
+for the hidden list: a scrolling set of thumbnails with a Restore button each.
+A photo reached through history that is hidden shows `hidden` in the caption
+and turns the button into Restore.
 
 Noctalia hot-reloads the `.luau` files. A change to `plugin.toml` (for example the
 panel size) needs `noctalia msg plugins disable khughitt/wali-panel` followed by

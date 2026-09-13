@@ -73,6 +73,7 @@ end
 
 function M.captionDetail(payload, errorText)
   if errorText ~= nil then return { text = errorText, color = "error" } end
+  if payload ~= nil and payload.hidden then return { text = payload.id .. " · hidden", color = "tertiary" } end
   return { text = payload and payload.id or "", color = "on_surface_variant" }
 end
 
