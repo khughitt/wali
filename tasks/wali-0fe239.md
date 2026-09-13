@@ -3,8 +3,10 @@ id: wali-0fe239
 title: "Wali panel: downvote/hide button with a reviewable hidden list"
 status: todo
 priority: 2
+size: m
+complexity: mid
 created: 2026-09-13T16:33:37Z
-updated: 2026-09-13T17:45:02Z
+updated: 2026-09-13T17:45:19Z
 depends: []
 tags: [noctalia, wallpaper]
 spec: docs/specs/2026-09-13-hidden-photos-design.md
