@@ -83,6 +83,12 @@ rejected whole on a malformed entry.
   is renamed over `<id>.jpg`, then the sidecar written with
   `write_json_atomic`. A failed render leaves the previous pair untouched,
   so a stale-but-good variant keeps displaying until a render succeeds.
+- `edits.json` is read-modify-written under an `edits.lock` in the state
+  dir, like the ratings file. Lock order everywhere is history → edits →
+  variants; a command that needs more than one acquires them in that order
+  and never the reverse. `navigate` already holds the history lock when
+  `ensure_variant` runs, which reads the recipe under `edits.lock` and
+  renders under `variants.lock`.
 - The crop needs the output size: config `[edits] output = "3440x1440"`,
   per host. An `anchor` other than `center` with no `output` set is
   `config key edits.output is required for anchor` at apply time. The crop
@@ -118,23 +124,40 @@ walictl variant reset [<id>]                  # remove the recipe and cache, re-
   does not merge). Passing a default value clears that key.
 - `preview` writes `$XDG_CACHE_HOME/wali/preview/<id>.<hash8>.jpg` and
   deletes other previews for that id. The changing file name is deliberate:
-  `ui.image` may cache by path. The source is resized to 560 px wide *before*
-  the operations so the round trip is fast enough for a slider, and the
-  pipeline is made representative of the full render at that scale: the
-  pixel-unit parameters (`blur` sigma, the bloom blur radius, and the noise
-  attenuation) are multiplied by the resize factor (560 / source width after
-  rotation), and the preview is cropped to the output aspect from the anchor
-  whenever `edits.output` is set, including `center`, so the preview shows
-  what Noctalia's crop will show. Without `edits.output` the preview is
-  uncropped, as the full render is.
-- `apply` order: render to the cache first, then save the recipe, then re-set
-  the wallpaper through Noctalia when the photo is displayed. A render
-  failure saves nothing; a rejected wallpaper change leaves the recipe and
-  cache in place (the next selection uses them) and reports the error.
-  `reset` removes the recipe, deletes the cache pair, and re-sets the
-  library file when the photo is displayed. History is not pushed by either
-  (the photo did not change; see Rendering). `reset` on a photo without a
-  recipe is `no recipe: <id>`.
+  `ui.image` may cache by path. The preview pipeline is rotate → resize to
+  560 px wide → tone → blur, noise, bloom → crop, so the resize happens
+  early enough to keep a slider round trip fast and late enough that the
+  scale factor is known: factor = 560 / rotated source width, where the
+  rotated width is the source width for 0/180 and the source height for
+  90/270. The pixel-unit parameters (`blur` sigma, the bloom blur radius,
+  and the noise attenuation) are multiplied by that factor, and the preview
+  is cropped to the output aspect from the anchor whenever `edits.output`
+  is set, including `center`, so the preview shows what Noctalia's crop
+  will show. Without `edits.output` the preview is uncropped, as the full
+  render is.
+- `apply` runs under the history lock from the moment it reads the
+  displayed wallpaper until history is updated, so the "is this photo
+  displayed" answer cannot change under it. Order: render to a temporary
+  file (under `variants.lock`); save the recipe (under `edits.lock`);
+  publish the temporary file over the cache pair; re-set the wallpaper
+  through Noctalia when the photo is displayed; update the history entry's
+  path. Failure at each step: a render failure saves and publishes nothing;
+  a recipe-save failure deletes the temporary file and leaves the old cache
+  and the old recipe intact; a publish failure after the save leaves the
+  recipe saved and the old cache in place with a now-stale sidecar, so the
+  next selection rerenders it, and the error is reported; a rejected
+  wallpaper change leaves the recipe and the new cache in place (the next
+  selection uses them) and reports the error.
+- `reset` runs under the same locks in the same order: remove the recipe
+  (under `edits.lock`); re-set the library file through Noctalia when the
+  photo is displayed; update the history entry's path; delete the cache
+  pair last. The cache is never deleted before the replacement has
+  succeeded, so a rejected change never leaves Noctalia pointing at a
+  deleted file: the recipe removal stands, the cache stays, the error is
+  reported, and the next selection of that photo (which now resolves to the
+  library file) deletes the pair. `reset` on a photo without a recipe is
+  `no recipe: <id>`. History is not pushed by `apply` or `reset` (the photo
+  did not change; see Rendering).
 - `walictl edit` keeps opening GIMP.
 
 ### Panel: edit mode
@@ -186,8 +209,11 @@ open so the controls are not lost.
   the recipe is gone; a failed render leaves the previous pair; navigation
   with `edits_file` unset never invokes the stub; `apply` and `reset` re-set
   the wallpaper only when the photo is current and rewrite the history
-  entry's path rather than pushing; `preview` prunes older previews; every
-  config error message.
+  entry's path rather than pushing; `apply` with a failing recipe save
+  leaves the old cache and recipe; `reset` with a rejected wallpaper change
+  keeps the cache; `apply` and `reset` hold the history lock across the
+  wallpaper change (the pattern `test_navigation_holds_the_history_lock`
+  uses); `preview` prunes older previews; every config error message.
 - One pytest against the real `magick`, skipped when it is not on `PATH`:
   render a generated landscape image with rotate 90, an anchor, blur, and
   bloom at full size and as a preview, and assert the preview equals the
