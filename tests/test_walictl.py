@@ -231,46 +231,76 @@ def test_display_path_prefers_variant_and_rejects_unknown_id(
         walictl.display_path(config, library, "nope")
 
 
-def test_favorites_round_trip_and_idempotent_ops(walictl: ModuleType, tmp_path: Path) -> None:
+def test_ratings_round_trip_and_idempotent_ops(walictl: ModuleType, tmp_path: Path) -> None:
     path = tmp_path / "favorites.json"
-    store = walictl.Favorites.load(path)
-    assert store.ids() == []
-    assert store.add("b", "2026-09-07T00:00:00Z") is True
-    assert store.add("b", "2026-09-07T00:00:01Z") is False
-    assert store.add("a", "2026-09-07T00:00:02Z") is True
+    store = walictl.Ratings.load(path)
+    assert store.favorite_ids() == [] and store.hidden_ids() == []
+    assert store.add_favorite("b", "2026-09-07T00:00:00Z") is True
+    assert store.add_favorite("b", "2026-09-07T00:00:01Z") is False
+    assert store.add_favorite("a", "2026-09-07T00:00:02Z") is True
+    assert store.add_hidden("h", "2026-09-07T00:00:03Z") is True
+    assert store.add_hidden("h", "2026-09-07T00:00:04Z") is False
     store.save(path)
-    loaded = walictl.Favorites.load(path)
-    assert loaded.ids() == ["a", "b"]
-    assert loaded.entries["b"] == {"added": "2026-09-07T00:00:00Z"}
-    assert "b" in loaded and "zzz" not in loaded
-    assert loaded.remove("b") is True
-    assert loaded.remove("b") is False
-    assert json.loads(path.read_text())["version"] == 1
+    loaded = walictl.Ratings.load(path)
+    assert loaded.favorite_ids() == ["a", "b"] and loaded.hidden_ids() == ["h"]
+    assert loaded.favorites["b"] == {"added": "2026-09-07T00:00:00Z"}
+    assert loaded.hidden["h"] == {"added": "2026-09-07T00:00:03Z"}
+    assert loaded.remove_favorite("b") is True
+    assert loaded.remove_favorite("b") is False
+    assert loaded.remove_hidden("h") is True
+    assert loaded.remove_hidden("h") is False
+    assert json.loads(path.read_text())["version"] == 2
     assert not list(tmp_path.glob("*.tmp"))
 
 
-def test_favorites_rejects_corrupt_file(walictl: ModuleType, tmp_path: Path) -> None:
+def test_ratings_refuse_overlap_in_both_directions(walictl: ModuleType) -> None:
+    store = walictl.Ratings(favorites={}, hidden={})
+    store.add_favorite("f", "T")
+    store.add_hidden("h", "T")
+    with pytest.raises(walictl.WalictlError, match="unfavorite first: f"):
+        store.add_hidden("f", "T")
+    with pytest.raises(walictl.WalictlError, match="unhide first: h"):
+        store.add_favorite("h", "T")
+    assert store.favorite_ids() == ["f"] and store.hidden_ids() == ["h"]
+
+
+def test_ratings_upgrade_version_1_on_save(walictl: ModuleType, tmp_path: Path) -> None:
+    path = tmp_path / "favorites.json"
+    path.write_text('{"version": 1, "favorites": {"a": {"added": "T"}}}')
+    store = walictl.Ratings.load(path)
+    assert store.favorite_ids() == ["a"] and store.hidden_ids() == []
+    store.save(path)
+    assert json.loads(path.read_text()) == {"version": 2, "favorites": {"a": {"added": "T"}}, "hidden": {}}
+
+
+def test_ratings_reject_corrupt_file(walictl: ModuleType, tmp_path: Path) -> None:
     path = tmp_path / "favorites.json"
     path.write_text("{not json")
     with pytest.raises(walictl.WalictlError, match="favorites file is not valid JSON"):
-        walictl.Favorites.load(path)
-    path.write_text('{"version": 9, "favorites": {}}')
+        walictl.Ratings.load(path)
+    path.write_text('{"version": 9, "favorites": {}, "hidden": {}}')
     with pytest.raises(walictl.WalictlError, match="unsupported favorites version"):
-        walictl.Favorites.load(path)
-    path.write_text('{"version": 1, "favorites": {"a": null}}')
-    with pytest.raises(walictl.WalictlError, match="malformed favorite entry: a"):
-        walictl.Favorites.load(path)
-    path.write_text('{"version": 1, "favorites": {"a": {"added": 5}}}')
-    with pytest.raises(walictl.WalictlError, match="malformed favorite entry: a"):
-        walictl.Favorites.load(path)
+        walictl.Ratings.load(path)
+    path.write_text('{"version": 2, "favorites": {"a": null}, "hidden": {}}')
+    with pytest.raises(walictl.WalictlError, match="malformed favorites entry: a"):
+        walictl.Ratings.load(path)
+    path.write_text('{"version": 2, "favorites": {}, "hidden": {"a": {"added": 5}}}')
+    with pytest.raises(walictl.WalictlError, match="malformed hidden entry: a"):
+        walictl.Ratings.load(path)
+    path.write_text('{"version": 2, "favorites": {}}')
+    with pytest.raises(walictl.WalictlError, match="favorites file has no hidden object"):
+        walictl.Ratings.load(path)
+    path.write_text('{"version": 2, "favorites": {"a": {"added": "T"}}, "hidden": {"a": {"added": "T"}}}')
+    with pytest.raises(walictl.WalictlError, match="photo in both favorites and hidden: a"):
+        walictl.Ratings.load(path)
 
 
 @pytest.mark.parametrize("version", [True, 1.0])
-def test_favorites_rejects_non_integer_version(walictl: ModuleType, tmp_path: Path, version: object) -> None:
+def test_ratings_reject_non_integer_version(walictl: ModuleType, tmp_path: Path, version: object) -> None:
     path = tmp_path / "favorites.json"
-    path.write_text(json.dumps({"version": version, "favorites": {}}))
+    path.write_text(json.dumps({"version": version, "favorites": {}, "hidden": {}}))
     with pytest.raises(walictl.WalictlError, match="unsupported favorites version"):
-        walictl.Favorites.load(path)
+        walictl.Ratings.load(path)
 
 
 def test_locked_times_out_while_another_holder_exists(walictl: ModuleType, tmp_path: Path) -> None:
@@ -463,24 +493,26 @@ def test_reconcile_records_external_change_and_discards_forward(walictl: ModuleT
     assert history.cursor == 1
 
 
-def favorites_of(walictl: ModuleType, *ids: str) -> Any:
-    store = walictl.Favorites(entries={})
-    for photo in ids:
-        store.add(photo, "T")
+def ratings_of(walictl: ModuleType, favorites: tuple[str, ...] = (), hidden: tuple[str, ...] = ()) -> Any:
+    store = walictl.Ratings(favorites={}, hidden={})
+    for photo in favorites:
+        store.add_favorite(photo, "T")
+    for photo in hidden:
+        store.add_hidden(photo, "T")
     return store
 
 
 def test_weights_zero_boosts_are_uniform_except_recent(walictl: ModuleType) -> None:
     ids = ["PXL_20210608_1", "PXL_20210609_1", "IMG_1"]
     sampling = walictl.Sampling(exclude_recent=1, favorite_boost=0.0, period_boost=0.0)
-    result = walictl.weights(ids, favorites_of(walictl, "PXL_20210608_1"), {"IMG_1"}, sampling)
+    result = walictl.weights(ids, ratings_of(walictl, favorites=("PXL_20210608_1",)), {"IMG_1"}, sampling)
     assert result == {"PXL_20210608_1": 1.0, "PXL_20210609_1": 1.0, "IMG_1": 0.0}
 
 
 def test_weights_apply_favorite_and_month_density(walictl: ModuleType) -> None:
     ids = ["PXL_20210608_1", "PXL_20210609_1", "PXL_20220402_1", "IMG_1"]
     sampling = walictl.Sampling(exclude_recent=0, favorite_boost=1.0, period_boost=3.0)
-    result = walictl.weights(ids, favorites_of(walictl, "PXL_20210608_1"), set(), sampling)
+    result = walictl.weights(ids, ratings_of(walictl, favorites=("PXL_20210608_1",)), set(), sampling)
     assert result["PXL_20210608_1"] == pytest.approx(2.0 * 2.5)
     assert result["PXL_20210609_1"] == pytest.approx(2.5)
     assert result["PXL_20220402_1"] == pytest.approx(1.0)
@@ -521,15 +553,15 @@ def test_sample_rejects_non_finite_total(walictl: ModuleType) -> None:
 
     sampling = walictl.Sampling(favorite_boost=sys.float_info.max, period_boost=sys.float_info.max)
     weighted = walictl.weights(
-        ["PXL_20210608_1"], favorites_of(walictl, "PXL_20210608_1"), set(), sampling
+        ["PXL_20210608_1"], ratings_of(walictl, favorites=("PXL_20210608_1",)), set(), sampling
     )
     with pytest.raises(walictl.WalictlError, match="total weight must be finite"):
         walictl.sample(weighted, random.Random(1), lambda _: None)
 
 
 def test_current_json_contract(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia) -> None:
-    store = walictl.Favorites(entries={})
-    store.add("PXL_20210608_111152739", "2026-09-07T00:00:00Z")
+    store = walictl.Ratings(favorites={}, hidden={})
+    store.add_favorite("PXL_20210608_111152739", "2026-09-07T00:00:00Z")
     store.save(env["favorites"])
     code, stdout, stderr = run_cli(walictl, ["current", "--json"])
     assert (code, stderr) == (0, "")
@@ -543,6 +575,7 @@ def test_current_json_contract(walictl: ModuleType, env: dict[str, Path], noctal
         "source_path": str(env["archive"] / "2021" / "06" / "PXL_20210608_111152739.jpg"),
         "variant_path": None,
         "favorite": True,
+        "hidden": False,
         "history": {"cursor": None, "length": 0},
     }
 
@@ -807,25 +840,33 @@ def test_favorite_toggles_current_and_explicit_ids(
     assert run_cli(walictl, ["favorite", "--add", "PXL_20220402_162957459"])[1] == "favorited PXL_20220402_162957459\n"
     assert run_cli(walictl, ["favorite", "--add", "PXL_20220402_162957459"])[1] == "favorited PXL_20220402_162957459\n"
     assert run_cli(walictl, ["favorite", "--remove", "PXL_20220402_162957459"])[1] == "unfavorited PXL_20220402_162957459\n"
-    assert walictl.Favorites.load(env["favorites"]).ids() == []
+    assert walictl.Ratings.load(env["favorites"]).favorite_ids() == []
     code, _, stderr = run_cli(walictl, ["favorite", "--add", "nope"])
     assert (code, stderr) == (1, "unknown photo id: nope\n")
     code, _, stderr = run_cli(walictl, ["favorite", "nope"])
     assert (code, stderr) == (1, "unknown photo id: nope\n")
+    hidden = walictl.Ratings.load(env["favorites"])
+    hidden.add_hidden("PXL_20210609_120000000", "T")
+    hidden.save(env["favorites"])
+    code, _, stderr = run_cli(walictl, ["favorite", "--add", "PXL_20210609_120000000"])
+    assert (code, stderr) == (1, "unhide first: PXL_20210609_120000000\n")
+    code, _, stderr = run_cli(walictl, ["favorite", "PXL_20210609_120000000"])
+    assert (code, stderr) == (1, "unhide first: PXL_20210609_120000000\n")
+    assert walictl.Ratings.load(env["favorites"]).favorite_ids() == []
     assert run_cli(walictl, ["favorite", "--add", "--remove", "x"])[0] == 2
 
 
 def test_favorite_can_remove_an_id_whose_file_is_missing(
     walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia
 ) -> None:
-    store = walictl.Favorites(entries={})
-    store.add("PXL_20210919_170859013", "T")
+    store = walictl.Ratings(favorites={}, hidden={})
+    store.add_favorite("PXL_20210919_170859013", "T")
     store.save(env["favorites"])
     assert run_cli(walictl, ["favorite", "--remove", "PXL_20210919_170859013"])[1] == "unfavorited PXL_20210919_170859013\n"
-    store.add("PXL_20210919_170859013", "T")
+    store.add_favorite("PXL_20210919_170859013", "T")
     store.save(env["favorites"])
     assert run_cli(walictl, ["favorite", "PXL_20210919_170859013"])[1] == "unfavorited PXL_20210919_170859013\n"
-    assert walictl.Favorites.load(env["favorites"]).ids() == []
+    assert walictl.Ratings.load(env["favorites"]).favorite_ids() == []
 
 
 def test_favorite_concurrent_additions_both_land(walictl: ModuleType, env: dict[str, Path]) -> None:
@@ -842,16 +883,16 @@ def test_favorite_concurrent_additions_both_land(walictl: ModuleType, env: dict[
         futures = [executor.submit(add, photo) for photo in ("PXL_20210608_111152739", "PXL_20210609_120000000")]
         for future in futures:
             future.result()
-    assert walictl.Favorites.load(env["favorites"]).ids() == ["PXL_20210608_111152739", "PXL_20210609_120000000"]
+    assert walictl.Ratings.load(env["favorites"]).favorite_ids() == ["PXL_20210608_111152739", "PXL_20210609_120000000"]
 
 
 def test_favorites_json_lists_paths_and_existence(
     walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, tmp_path: Path
 ) -> None:
-    store = walictl.Favorites(entries={})
-    store.add("PXL_20210608_111152739", "T1")
-    store.add("PXL_20210919_170859013", "T2")
-    store.add("PXL_20210609_120000000", "T3")
+    store = walictl.Ratings(favorites={}, hidden={})
+    store.add_favorite("PXL_20210608_111152739", "T1")
+    store.add_favorite("PXL_20210919_170859013", "T2")
+    store.add_favorite("PXL_20210609_120000000", "T3")
     store.save(env["favorites"])
     variants = tmp_path / "edits"
     variants.mkdir()
@@ -987,9 +1028,9 @@ def test_import_favorites_dedupes_and_reports(walictl: ModuleType, env: dict[str
         "missing display files: 1\n  PXL_20210630_000000000\n"
         f"wrote {env['favorites']}\n"
     )
-    store = walictl.Favorites.load(env["favorites"])
-    assert store.ids() == ["PXL_20210608_111152739", "PXL_20210609_120000000", "PXL_20210630_000000000"]
-    assert all(set(v) == {"added"} for v in store.entries.values())
+    store = walictl.Ratings.load(env["favorites"])
+    assert store.favorite_ids() == ["PXL_20210608_111152739", "PXL_20210609_120000000", "PXL_20210630_000000000"]
+    assert all(set(v) == {"added"} for v in store.favorites.values())
 
 
 def test_import_favorites_refuses_to_overwrite_without_force(
@@ -1001,7 +1042,7 @@ def test_import_favorites_refuses_to_overwrite_without_force(
     code, _, stderr = run_cli(walictl, ["import-favorites", str(source)])
     assert (code, stderr) == (1, f"favorites file already exists (use --force): {env['favorites']}\n")
     assert run_cli(walictl, ["import-favorites", "--force", str(source)])[0] == 0
-    assert walictl.Favorites.load(env["favorites"]).ids() == ["x"]
+    assert walictl.Ratings.load(env["favorites"]).favorite_ids() == ["x"]
 
 
 def test_import_favorites_refuses_a_store_created_while_waiting_for_the_lock(
@@ -1018,7 +1059,7 @@ def test_import_favorites_refuses_a_store_created_while_waiting_for_the_lock(
     walictl.locked = locked_then_racer  # type: ignore[assignment]
     code, _, stderr = run_cli(walictl, ["import-favorites", str(source)])
     assert (code, stderr) == (1, f"favorites file already exists (use --force): {env['favorites']}\n")
-    assert walictl.Favorites.load(env["favorites"]).ids() == ["other"]
+    assert walictl.Ratings.load(env["favorites"]).favorite_ids() == ["other"]
 
 
 def test_import_favorites_fails_on_missing_source(walictl: ModuleType, env: dict[str, Path], tmp_path: Path) -> None:

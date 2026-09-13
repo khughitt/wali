@@ -225,52 +225,78 @@ def read_json(path: Path, label: str) -> dict[str, object] | None:
 
 # --- favorites --------------------------------------------------------------
 
-FAVORITES_VERSION = 1
+RATINGS_VERSION = 2
 
 
 def favorites_lock() -> Path:
     return state_dir() / "favorites.lock"
 
 
+def _rating_entries(payload: dict[str, object], key: str, path: Path) -> dict[str, dict[str, str]]:
+    entries = payload.get(key)
+    if not isinstance(entries, dict):
+        raise WalictlError(f"favorites file has no {key} object: {path}")
+    checked: dict[str, dict[str, str]] = {}
+    for photo, value in entries.items():
+        if not isinstance(value, dict) or not isinstance(value.get("added"), str):
+            raise WalictlError(f"malformed {key} entry: {photo} in {path}")
+        checked[str(photo)] = {"added": value["added"]}
+    return checked
+
+
 @dataclass
-class Favorites:
-    entries: dict[str, dict[str, str]]
+class Ratings:
+    """Favorites and hidden photos: one file, two disjoint sets."""
+
+    favorites: dict[str, dict[str, str]]
+    hidden: dict[str, dict[str, str]]
 
     @classmethod
-    def load(cls, path: Path) -> Favorites:
+    def load(cls, path: Path) -> Ratings:
         payload = read_json(path, "favorites file")
         if payload is None:
-            return cls(entries={})
+            return cls(favorites={}, hidden={})
         version = payload.get("version")
-        if type(version) is not int or version != FAVORITES_VERSION:
+        if type(version) is not int or version not in (1, RATINGS_VERSION):
             raise WalictlError(f"unsupported favorites version in {path}: {version!r}")
-        entries = payload.get("favorites")
-        if not isinstance(entries, dict):
-            raise WalictlError(f"favorites file has no favorites object: {path}")
-        checked: dict[str, dict[str, str]] = {}
-        for key, value in entries.items():
-            if not isinstance(value, dict) or not isinstance(value.get("added"), str):
-                raise WalictlError(f"malformed favorite entry: {key} in {path}")
-            checked[str(key)] = {"added": value["added"]}
-        return cls(entries=checked)
+        favorites = _rating_entries(payload, "favorites", path)
+        # Version 1 predates hidden photos; it is rewritten as version 2 on the next save.
+        hidden = _rating_entries(payload, "hidden", path) if version == RATINGS_VERSION else {}
+        overlap = sorted(set(favorites) & set(hidden))
+        if overlap:
+            raise WalictlError(f"photo in both favorites and hidden: {overlap[0]} in {path}")
+        return cls(favorites=favorites, hidden=hidden)
 
     def save(self, path: Path) -> None:
-        write_json_atomic(path, {"version": FAVORITES_VERSION, "favorites": self.entries})
+        write_json_atomic(path, {"version": RATINGS_VERSION, "favorites": self.favorites, "hidden": self.hidden})
 
-    def __contains__(self, photo_id: object) -> bool:
-        return photo_id in self.entries
+    def favorite_ids(self) -> list[str]:
+        return sorted(self.favorites)
 
-    def ids(self) -> list[str]:
-        return sorted(self.entries)
+    def hidden_ids(self) -> list[str]:
+        return sorted(self.hidden)
 
-    def add(self, photo_id: str, now: str) -> bool:
-        if photo_id in self.entries:
+    def add_favorite(self, photo_id: str, now: str) -> bool:
+        if photo_id in self.hidden:
+            raise WalictlError(f"unhide first: {photo_id}")
+        if photo_id in self.favorites:
             return False
-        self.entries[photo_id] = {"added": now}
+        self.favorites[photo_id] = {"added": now}
         return True
 
-    def remove(self, photo_id: str) -> bool:
-        return self.entries.pop(photo_id, None) is not None
+    def remove_favorite(self, photo_id: str) -> bool:
+        return self.favorites.pop(photo_id, None) is not None
+
+    def add_hidden(self, photo_id: str, now: str) -> bool:
+        if photo_id in self.favorites:
+            raise WalictlError(f"unfavorite first: {photo_id}")
+        if photo_id in self.hidden:
+            return False
+        self.hidden[photo_id] = {"added": now}
+        return True
+
+    def remove_hidden(self, photo_id: str) -> bool:
+        return self.hidden.pop(photo_id, None) is not None
 
 
 # --- history ----------------------------------------------------------------
@@ -391,18 +417,18 @@ def reconcile(history: History, displayed: Path, now: str) -> bool:
 # --- sampler ----------------------------------------------------------------
 
 
-def weights(ids: list[str], favorites: Favorites, recent: set[str], sampling: Sampling) -> dict[str, float]:
+def weights(ids: list[str], ratings: Ratings, recent: set[str], sampling: Sampling) -> dict[str, float]:
     months = {photo: capture_date(photo) for photo in ids}
     month_of = {photo: (d.year, d.month) for photo, d in months.items() if d is not None}
     photos_per_month = Counter(month_of.values())
-    favorites_per_month = Counter(month for photo, month in month_of.items() if photo in favorites)
+    favorites_per_month = Counter(month for photo, month in month_of.items() if photo in ratings.favorites)
     result: dict[str, float] = {}
     for photo in ids:
         if photo in recent:
             result[photo] = 0.0
             continue
         weight = 1.0
-        if photo in favorites:
+        if photo in ratings.favorites:
             weight *= 1.0 + sampling.favorite_boost
         month = month_of.get(photo)
         if month is not None:
@@ -438,7 +464,7 @@ class Context:
 
 
 def describe(
-    ctx: Context, displayed: Path, library: dict[str, Path], favorites: Favorites, history: History
+    ctx: Context, displayed: Path, library: dict[str, Path], ratings: Ratings, history: History
 ) -> dict[str, object]:
     photo = photo_id(displayed)
     taken = capture_date(photo)
@@ -452,7 +478,8 @@ def describe(
         "path": str(displayed),
         "source_path": str(source) if source else None,
         "variant_path": str(variant) if variant else None,
-        "favorite": photo in favorites,
+        "favorite": photo in ratings.favorites,
+        "hidden": photo in ratings.hidden,
         "history": {"cursor": history.cursor if history.cursor >= 0 else None, "length": len(history.entries)},
     }
 
@@ -460,9 +487,9 @@ def describe(
 def cmd_current(ctx: Context, args: argparse.Namespace) -> int:
     displayed = ctx.noctalia.get_default()
     library = scan_library(ctx.config.wallpaper_dir)
-    favorites = Favorites.load(ctx.config.favorites_file)
+    ratings = Ratings.load(ctx.config.favorites_file)
     history = History.load(history_path())
-    json.dump(describe(ctx, displayed, library, favorites, history), ctx.out)
+    json.dump(describe(ctx, displayed, library, ratings, history), ctx.out)
     ctx.out.write("\n")
     return 0
 
@@ -510,10 +537,10 @@ def navigate(ctx: Context, action: str, rng: random.Random) -> str:
                     raise WalictlError(f"no {action} photo in the library")
                 picked = ordered[index]
             else:
-                favorites = Favorites.load(ctx.config.favorites_file)
+                ratings = Ratings.load(ctx.config.favorites_file)
                 weighted = weights(
                     list(library),
-                    favorites,
+                    ratings,
                     history.recent_ids(ctx.config.sampling.exclude_recent),
                     ctx.config.sampling,
                 )
@@ -565,15 +592,15 @@ def _current_id(ctx: Context) -> str:
 def cmd_favorite(ctx: Context, args: argparse.Namespace) -> int:
     photo = args.photo_id or _current_id(ctx)
     with locked(favorites_lock()):
-        store = Favorites.load(ctx.config.favorites_file)
-        removing = args.remove or (not args.add and photo in store)
+        store = Ratings.load(ctx.config.favorites_file)
+        removing = args.remove or (not args.add and photo in store.favorites)
         if removing:
-            store.remove(photo)
+            store.remove_favorite(photo)
             state = "unfavorited"
         else:
             if photo not in scan_library(ctx.config.wallpaper_dir):
                 raise WalictlError(f"unknown photo id: {photo}")
-            store.add(photo, utc_now())
+            store.add_favorite(photo, utc_now())
             state = "favorited"
         store.save(ctx.config.favorites_file)
     ctx.out.write(f"{state} {photo}\n")
@@ -582,15 +609,15 @@ def cmd_favorite(ctx: Context, args: argparse.Namespace) -> int:
 
 def cmd_favorites(ctx: Context, args: argparse.Namespace) -> int:
     library = scan_library(ctx.config.wallpaper_dir)
-    store = Favorites.load(ctx.config.favorites_file)
+    store = Ratings.load(ctx.config.favorites_file)
     items = []
-    for photo in store.ids():
+    for photo in store.favorite_ids():
         path = resolve_variant(ctx.config, photo) or library.get(photo)
         source = resolve_source(ctx.config, photo)
         items.append(
             {
                 "id": photo,
-                "added": store.entries[photo].get("added"),
+                "added": store.favorites[photo].get("added"),
                 "path": str(path) if path else None,
                 "source_path": str(source) if source else None,
                 "exists": path is not None,
@@ -616,9 +643,9 @@ def cmd_import_favorites(ctx: Context, args: argparse.Namespace) -> int:
     with locked(favorites_lock()):
         if ctx.config.favorites_file.exists() and not args.force:
             raise WalictlError(f"favorites file already exists (use --force): {ctx.config.favorites_file}")
-        store = Favorites(entries={})
+        store = Ratings(favorites={}, hidden={})
         for photo in unique_ids:
-            store.add(photo, now)
+            store.add_favorite(photo, now)
         store.save(ctx.config.favorites_file)
     ctx.out.write(f"lines: {len(lines)}\nunique: {len(unique_ids)}\n")
     ctx.out.write(f"duplicate occurrences: {len(ids) - len(unique_ids)}\n")
