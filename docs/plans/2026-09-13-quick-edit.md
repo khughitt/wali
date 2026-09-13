@@ -16,7 +16,7 @@
 - Config: `edits_file` (optional top-level key) and `[edits] output = "WxH"` (optional). With `edits_file` unset, recipes are off: no render step, navigation as today, and every `variant` command fails with `config key edits_file is required`. `[edits]` without `edits_file` is `config key edits_file is required for [edits]`.
 - The `variants_dir` config key is removed; the cache is `$XDG_CACHE_HOME/wali/variants/<id>/<key16>/<id>.jpg` (no sidecar: a render is current iff its keyed file exists); previews are `$XDG_CACHE_HOME/wali/preview/<id>/<key8>.jpg`. Temporary render files end in `.tmp.jpg`.
 - Noctalia skips a `wallpaper-set` for the path it already shows, so every distinct render has a distinct path. Nothing deletes a render except a prune that runs after a successful `wallpaper-set` (or for a photo that is not displayed).
-- Photo ids from recipe files, ratings files, and command arguments pass `check_photo_id`: a single stem, non-empty, not `.`/`..`, no `/`, no NUL. Cache maintenance lists directories; it never expands an id inside a glob.
+- Photo ids from recipe files, ratings files, history files, and command arguments pass `check_photo_id`: a single stem, non-empty, not `.`/`..`, no `/`, no NUL. The cache path helpers (`variant_dir`, `preview_dir`) call it themselves, so no caller can build a cache path from an unchecked id. Cache maintenance lists directories; it never expands an id inside a glob.
 - Recipe keys, defaults, ranges, and magick mapping are the spec's table; operation order is rotate → (resize, preview only) → tone → blur → noise → bloom → crop. `chroma` and `zoom` do not exist.
 - Lock order is history → edits → variants; a command needing several acquires them in that order and never the reverse. `apply` and `reset` hold the history lock from reading the displayed wallpaper through updating history.
 - `apply` order: render to temp in the new keyed dir (variants lock, released) → save recipe (edits lock) → publish (variants lock) → set wallpaper if displayed → update the history entry's path → prune the photo's other renders (variants lock; skipped when the set was rejected). `reset` order: remove recipe → set library file if displayed → update history path → prune every render of the photo, only if not displayed or the set succeeded.
@@ -105,6 +105,9 @@ def test_cache_paths_and_photo_id_validation(walictl: ModuleType, env: dict[str,
     for bad in ("", ".", "..", "a/b", "../victim", "a\x00b", 5, None):
         with pytest.raises(walictl.WalictlError, match="id must be a single file name stem"):
             walictl.check_photo_id(bad, "id")
+    for helper in (walictl.variant_dir, walictl.preview_dir):
+        with pytest.raises(walictl.WalictlError, match="photo id must be a single file name stem"):
+            helper("../victim")
 
 
 def test_cli_rejects_path_like_ids(walictl: ModuleType, env: dict[str, Path]) -> None:
@@ -215,7 +218,9 @@ def previews_dir() -> Path:
 
 
 def variant_dir(photo_id: str) -> Path:
-    return variants_dir() / photo_id
+    # The check lives here, not in the callers: history, recipes, ratings, and
+    # arguments all reach the cache through this helper.
+    return variants_dir() / check_photo_id(photo_id, "photo id")
 
 
 def variant_file(photo_id: str, key: str) -> Path:
@@ -223,7 +228,7 @@ def variant_file(photo_id: str, key: str) -> Path:
 
 
 def preview_dir(photo_id: str) -> Path:
-    return previews_dir() / photo_id
+    return previews_dir() / check_photo_id(photo_id, "photo id")
 ```
 
 Reduce `resolve_variant` to a stub Task 4 replaces:
@@ -233,7 +238,7 @@ def resolve_variant(config: Config, photo_id: str) -> Path | None:
     return None  # replaced by current_variant once recipes exist
 ```
 
-In `build_parser`, give every positional `photo_id` argument `type=photo_id_arg` (`favorite`, and the `hide`/`unhide` parsers from the hidden-photos plan).
+In `build_parser`, give every positional `photo_id` argument `type=photo_id_arg` (`favorite`, and the `hide`/`unhide` parsers from the hidden-photos plan). In `History.load`, validate each entry's id after the field check: `check_photo_id(raw["id"], f"history entry id in {path}")`, and add to `test_history_rejects_malformed_state`'s parametrization a payload whose entry has `"id": "../victim"`, expecting `history entry id in`. Both layers hold: a malformed history file fails to load at all, and a path built for any id that slipped past a loader fails at the helper.
 
 `display_path` and `replay_path` keep calling `resolve_variant` for now (Task 4 swaps in `ensure_variant`). `find_by_stem` loses its only non-test caller (`scan_library` still uses `_extension_rank`): delete it and its test `test_find_by_stem_matches_literal_bracketed_stem`.
 
@@ -771,7 +776,7 @@ git commit -m "feat(walictl): ImageMagick render pipeline"
 - Test: `tests/test_walictl.py`
 
 **Interfaces:**
-- Produces: `source_identity(path) -> dict[str, object]` (`{"path", "size", "mtime_ns"}`); `render_key(recipe, output, identity) -> str` (SHA-256 hex of the canonical JSON of `{"recipe", "output", "source"}`); `render_to_temp(source, recipe, output, target_dir) -> Path` (a `.tmp.jpg` inside `target_dir`, created as needed; deleted on failure); `publish_variant(tmp, photo_id, key) -> Path` (`os.replace` onto `variant_file`); `prune_variants(photo_id, keep: Path | None)` (removes every `variant_dir(photo_id)/<key>/` except the one holding `keep`; lists directories, no glob); `recipe_key(config, library, photo_id) -> tuple[recipe | None, key | None]` (loads the recipe under `edits.lock`); `current_variant(config, library, photo_id) -> Path | None` (the keyed file if it exists — never renders, never deletes); `ensure_variant(config, library, photo_id) -> Path | None` (renders when missing; never deletes). `resolve_variant(config, photo_id)` is removed; `describe`, `cmd_current`, and `_rating_items` call `current_variant(config, library, photo_id)`. `display_path(config, library, photo_id)` returns `ensure_variant(...) or library[photo_id]`; `replay_path(config, library, entry)` returns `ensure_variant(config, library, entry.id) or library.get(entry.id) or Path(entry.path)`. `navigate` calls `prune_variants(selected.id, keep=displayed)` after `set_default` succeeds.
+- Produces: `source_identity(path) -> dict[str, object]` (`{"path", "size", "mtime_ns"}`); `render_key(recipe, output, identity) -> str` (SHA-256 hex of the canonical JSON of `{"recipe", "output", "source"}`); `render_to_temp(source, recipe, output, target_dir) -> Path` (a `.tmp.jpg` inside `target_dir`, created as needed; deleted on failure); `publish_variant(tmp, photo_id, key) -> Path` (`os.replace` onto `variant_file`); `prune_variants(photo_id, keep: Path | None)` (removes every `variant_dir(photo_id)/<key>/` except the one holding `keep`; lists directories, no glob); `recipe_key(config, library, photo_id) -> tuple[recipe | None, key | None]` (loads the recipe under `edits.lock`; `key` is `None` when there is no recipe *or* the library has no file for the id); `current_variant(config, library, photo_id) -> Path | None` (the keyed file if it exists — never renders, never deletes, and returns `None` for a recipe whose source is missing so metadata listings keep working); `ensure_variant(config, library, photo_id) -> Path | None` (renders when missing; raises `unknown photo id` for a recipe whose source is missing; never deletes). `resolve_variant(config, photo_id)` is removed; `describe`, `cmd_current`, and `_rating_items` call `current_variant(config, library, photo_id)`. `display_path(config, library, photo_id)` returns `ensure_variant(...) or library[photo_id]`; `replay_path(config, library, entry)` returns `ensure_variant(config, library, entry.id) or library.get(entry.id) or Path(entry.path)`. `navigate` calls `prune_variants(selected.id, keep=displayed)` after `set_default` succeeds.
 - Consumes: Tasks 1–3, `locked`, `edits_lock`, `variants_lock`, `EditsStore`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -823,6 +828,46 @@ def test_ensure_variant_renders_per_key_and_never_deletes(
     walictl.prune_variants(photo, keep=None)
     assert renders_of(walictl, photo) == []
     assert not walictl.variant_dir(photo).exists()
+
+
+def test_metadata_tolerates_a_recipe_whose_source_is_missing(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path
+) -> None:
+    enable_edits(env)
+    config = walictl.load_config(walictl.config_path())
+    library = walictl.scan_library(config.wallpaper_dir)
+    gone = "PXL_20210919_170859013"  # a recipe for a photo the library no longer holds
+    recipe_for(walictl, env, gone, {"rotate": 90})
+    assert walictl.current_variant(config, library, gone) is None
+    with pytest.raises(walictl.WalictlError, match=f"unknown photo id: {gone}"):
+        walictl.ensure_variant(config, library, gone)
+    ratings_of(walictl, favorites=(gone, "PXL_20210608_111152739")).save(env["favorites"])
+    code, stdout, stderr = run_cli(walictl, ["favorites", "--json"])
+    assert (code, stderr) == (0, "")
+    items = {item["id"]: item for item in json.loads(stdout)["favorites"]}
+    assert items[gone]["exists"] is False and items[gone]["path"] is None
+    assert items["PXL_20210608_111152739"]["exists"] is True
+    assert magick_calls(fake_magick) == []
+
+
+def test_replay_of_a_path_like_history_id_fails_before_touching_the_cache(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path
+) -> None:
+    enable_edits(env)
+    victim = env["cache_home"] / "wali" / "victim" / "x.jpg"
+    victim.parent.mkdir(parents=True)
+    victim.touch()
+    walictl.history_path().parent.mkdir(parents=True, exist_ok=True)
+    walictl.history_path().write_text(json.dumps({
+        "version": 1, "cursor": 1,
+        "entries": [
+            {"ts": "T", "id": "../victim", "path": str(victim), "origin": "observed"},
+            {"ts": "T", "id": "PXL_20210608_111152739", "path": str(env["wallpapers"] / "PXL_20210608_111152739.jpg"), "origin": "next"},
+        ],
+    }))
+    code, _, stderr = run_cli(walictl, ["previous"])
+    assert code == 1 and "history entry id in" in stderr
+    assert victim.exists()
 
 
 def test_prune_variants_keeps_only_the_displayed_render(walictl: ModuleType, env: dict[str, Path], fake_magick: Path) -> None:
@@ -951,7 +996,7 @@ def test_current_reports_the_keyed_variant_without_rendering(
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `uv run --frozen pytest -q tests/test_walictl.py -k "ensure_variant or prune or renders or rendered_variant or never_renders or render_failure or keyed_variant"`
+Run: `uv run --frozen pytest -q tests/test_walictl.py -k "ensure_variant or prune or renders or rendered_variant or never_renders or render_failure or keyed_variant or source_is_missing or path_like_history"`
 Expected: FAIL with `AttributeError: ... 'ensure_variant'`.
 
 - [ ] **Step 3: Implement**
@@ -1011,7 +1056,12 @@ def prune_variants(photo_id: str, keep: Path | None) -> None:
 
 
 def recipe_key(config: Config, library: dict[str, Path], photo_id: str) -> tuple[dict[str, int | str] | None, str | None]:
-    """The photo's recipe and the key of its render on this host, or (None, None)."""
+    """The photo's recipe and the key of its render on this host.
+
+    The key is None when there is no recipe, and also when the library has no
+    file for the id: a recipe can outlive its photo, and metadata queries must
+    keep answering for the rest of the library.
+    """
     if config.edits is None:
         return None, None
     with locked(edits_lock()):
@@ -1020,7 +1070,7 @@ def recipe_key(config: Config, library: dict[str, Path], photo_id: str) -> tuple
         return None, None
     source = library.get(photo_id)
     if source is None:
-        raise WalictlError(f"unknown photo id: {photo_id}")
+        return recipe, None
     return recipe, render_key(recipe, config.edits.output, source_identity(source))
 
 
@@ -1036,8 +1086,10 @@ def current_variant(config: Config, library: dict[str, Path], photo_id: str) -> 
 def ensure_variant(config: Config, library: dict[str, Path], photo_id: str) -> Path | None:
     """The photo's render, rendering it if missing. Never deletes: pruning waits for a successful set."""
     recipe, key = recipe_key(config, library, photo_id)
-    if recipe is None or key is None:
+    if recipe is None:
         return None
+    if key is None:
+        raise WalictlError(f"unknown photo id: {photo_id}")
     with locked(variants_lock()):
         target = variant_file(photo_id, key)
         if target.is_file():
