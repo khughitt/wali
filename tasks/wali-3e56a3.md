@@ -6,10 +6,11 @@ priority: 2
 size: s
 complexity: mid
 created: 2026-09-12T09:35:40Z
-updated: 2026-09-13T17:30:47Z
+updated: 2026-09-13T17:45:02Z
 depends: []
 tags: [quick-add, noctalia, wallpaper]
 source: dots-9bfdc0
+plan: docs/plans/2026-09-13-wali-panel-pass-2.md
 ---
 
 Second design pass on noctalia/plugins/wali-panel after pass 1 (dots-ba0168). Try the nav buttons without discrete borders: ghost variant or a quieter indication of the pressable area. Explore subtle color or effects beyond Random in primary. Remove the Refresh button: onOpen already refreshes and the button is usually a no-op. Keep the 16:9 frame and the date-and-id caption.
