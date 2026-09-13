@@ -1,6 +1,6 @@
 # Hidden photos
 
-Status: draft, 2026-09-13. Task `wali-0fe239`.
+Status: implemented on branch `panel-scope`, 2026-09-13 (commits cf937a1..f1f5680). Task `wali-0fe239`.
 
 ## Problem
 
@@ -32,6 +32,8 @@ one host applies everywhere.
   `hidden` key) and writes version 2 on the next save; any other version is an
   error, as today. Version 1 acceptance is a one-time upgrade path, not a
   compatibility layer to keep: remove it once both hosts have written version 2.
+  Update `walictl` on every host before the first favorite or hide write after
+  this lands: a version 1 `walictl` refuses the version 2 file.
 - A photo is in at most one set, and every writer enforces it. `load` rejects
   a file whose sets overlap (`photo in both favorites and hidden: <id>`).
   `hide` refuses a favorite (`unfavorite first: <id>`); `favorite` with
@@ -60,7 +62,8 @@ walictl hidden --json      # {ok, hidden: [{id, added, date, display_date, path,
   rejects the change. The hide stays recorded; the command reports
   `hidden <id>` on stdout, then the replacement error on stderr, exit 1. The
   panel refreshes metadata after `hide` regardless of exit status, so the
-  caption shows both the `hidden` state and the error.
+  caption shows the error and the hide button already reads Restore (the
+  photo is hidden; `current.hidden` is true).
 - `hidden --json` mirrors `favorites --json` item for item (both gain `date`
   and `display_date`), so the panel list and any script can render thumbnails
   from `path` with a caption.

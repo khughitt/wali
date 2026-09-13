@@ -439,6 +439,10 @@ equal(runs[#runs].command, Shell.command(commands.hidden))
 runs[#runs].callback(success("hidden list"))
 local scroll = assert(find(rendered, "scroll"), "hidden list must scroll")
 equal(#scroll.children, 2)
+local goneIdLabel = assert(labelNode(rendered, function(props) return props.text == "gone" and props.fontFamily == "monospace" end), "undated row id label not found")
+equal(goneIdLabel.props.visible, false, "an undated row must not repeat the id")
+local datedIdLabel = assert(labelNode(rendered, function(props) return props.text == "PXL_20260101_000000000" and props.fontFamily == "monospace" end), "dated row id label not found")
+equal(datedIdLabel.props.visible, true, "a dated row must show its id")
 local restoreRow = assert(button(rendered, "restore:gone"))
 restoreRow.props.onClick()
 equal(runs[#runs].command, Shell.command(Logic.unhideCommand("gone")))
@@ -509,5 +513,17 @@ onKey("x", true)
 equal(runs[#runs].command, Shell.command(commands.hide))
 runs[#runs].callback(success("hidden PXL_20260820_000000000"))
 runs[#runs].callback(success("with source"))
+
+-- a failed list load shows the error, not "Nothing hidden"
+onKey("shift+x", true)
+runs[#runs].callback({ exitCode = 1, stdout = "", stderr = "hidden broke", timedOut = false })
+local sawError, sawEmpty = false, false
+for _, text in ipairs(labels(rendered)) do
+  if text == "hidden broke" then sawError = true end
+  if text == "Nothing hidden" then sawEmpty = true end
+end
+assert(sawError, "a failed list load must show the error")
+assert(not sawEmpty, "a failed list load must not claim nothing is hidden")
+onKey("shift+x", true)
 
 print("Wali plugin tests passed")

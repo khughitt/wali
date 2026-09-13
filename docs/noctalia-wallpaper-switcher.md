@@ -25,7 +25,7 @@ verify the exported effective config has wallpaper automation disabled.
 | Path | Purpose |
 |---|---|
 | `$XDG_CONFIG_HOME/wali/config.toml` | Per-host config, linked by dotfiles' setup.sh from its `wali/<hostname>/config.toml` |
-| `<favorites_file>` | Favorites keyed by photo id, synced with the backgrounds directory |
+| `<favorites_file>` | Favorites and hidden photos keyed by photo id (version 2), synced with the backgrounds directory |
 | `$XDG_STATE_HOME/wali/history.json` | Per-host history with a cursor |
 | `bin/walictl` | The CLI |
 | `tests/test_walictl.py` | Tests |
@@ -82,6 +82,8 @@ explicit `unhide` or `--remove`. Hidden photos are never sampled, `earlier`,
 them: `current --json` reports `hidden` so a replayed hidden photo is visible
 as such. `hide` records first and then replaces the displayed photo; if no
 visible photo remains or Noctalia rejects the change, the hide stands and the
-command exits 1.
+command exits 1. Update `walictl` on every host before the first favorite or
+hide write after this lands: a version 1 `walictl` refuses the version 2
+file.
 
 Design: `docs/specs/2026-09-07-wallpaper-management-redesign-design.md` in the dotfiles repo, where the redesign was done.

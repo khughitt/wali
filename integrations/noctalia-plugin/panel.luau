@@ -219,7 +219,8 @@ local function hiddenRow(item, enabled)
     ui.image({ path = item.path or "", width = 64, height = 40, radius = 6, fit = "cover", visible = item.path ~= nil }),
     ui.column({ gap = 2, flexGrow = 1 }, {
       ui.label({ text = item.display_date or item.date or item.id, fontSize = 14, fontWeight = "medium", maxLines = 1 }),
-      ui.label({ text = item.id, fontSize = 11, fontFamily = "monospace", color = "on_surface_variant", maxLines = 1 }),
+      ui.label({ text = item.id, fontSize = 11, fontFamily = "monospace", color = "on_surface_variant", maxLines = 1,
+        visible = item.display_date ~= nil or item.date ~= nil }),
     }),
     ui.button({ key = "restore:" .. item.id, glyph = "eye", glyphSize = 16, variant = "ghost", controlSize = "sm",
       tooltip = "Restore", enabled = enabled, onClick = function() startUnhide(item.id) end }),
@@ -236,6 +237,8 @@ local function hiddenView(enabled)
   }
   if state.hiddenList == nil then
     rows[#rows + 1] = ui.glyph({ name = "loader", size = 32, color = "on_surface_variant/0.6" })
+  elseif #state.hiddenList == 0 and state.errorText ~= nil then
+    rows[#rows + 1] = ui.label({ text = state.errorText, fontSize = 13, color = "error" })
   elseif #state.hiddenList == 0 then
     rows[#rows + 1] = ui.label({ text = "Nothing hidden", fontSize = 13, color = "on_surface_variant" })
   else
