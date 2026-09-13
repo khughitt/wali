@@ -22,7 +22,7 @@ In niri, `Super+N` toggles the panel and gives it keyboard focus immediately.
 | `l` / Right | Next in history, or sample at the end |
 | `k` / Up | Earlier photo by capture time |
 | `j` / Down | Later photo by capture time |
-| `r` | Random photo |
+| `r` | Random photo (clicking the photo also samples) |
 | `f` | Toggle favorite |
 | `e` | Edit in GIMP |
 | `y` | Copy source path, or display path if unavailable |

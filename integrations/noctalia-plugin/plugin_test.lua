@@ -180,6 +180,15 @@ local function find(node, nodeType)
   return nil
 end
 
+local function labelNode(node, predicate)
+  if node.type == "label" and predicate(node.props) then return node end
+  for _, child in ipairs(node.children) do
+    local found = labelNode(child, predicate)
+    if found then return found end
+  end
+  return nil
+end
+
 onOpen({})
 assert(rendered.children[1].type ~= "box", "ui.box cannot hold children; the placeholder frame must be a container")
 local placeholderGlyph = assert(find(rendered, "glyph"), "placeholder frame lost its glyph")
@@ -187,7 +196,13 @@ equal(placeholderGlyph.props.name, "loader")
 equal(#runs, 1)
 equal(runs[1].command, Shell.command(commands.current))
 equal(runs[1].timeout, 10000)
+
+local historyLabelNode = assert(labelNode(rendered, function(props) return props.text == "" and props.fontFamily == "monospace" and props.visible == false end), "history label not found before metadata loads")
+
 runs[1].callback(success("with source"))
+
+local historyLabelAfter = assert(labelNode(rendered, function(props) return (props.text == "4/4" or props.text == "") and props.fontFamily == "monospace" and props.visible ~= nil end), "history label not found after metadata loads")
+assert(historyLabelAfter.props.visible == true, "history label must be visible when loaded")
 
 local copy = assert(button(rendered, "copy"))
 assert(copy.props.enabled)

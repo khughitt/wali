@@ -69,6 +69,7 @@ function M.captionDetail(payload, errorText)
   return { text = payload and payload.id or "", color = "on_surface_variant" }
 end
 
+-- payload is nil or a validateCurrent result, so payload.history is always a table.
 function M.historyLabel(payload)
   if payload == nil or payload.history.cursor == nil then return "" end
   return tostring(payload.history.cursor + 1) .. "/" .. tostring(payload.history.length)

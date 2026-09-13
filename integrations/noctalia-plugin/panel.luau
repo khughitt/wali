@@ -173,11 +173,12 @@ end
 
 local function actions(current, enabled)
   local loaded = enabled and current ~= nil
+  local position = Logic.historyLabel(current)
   return ui.row({ align = "center", gap = 8 }, {
     navButton("previous", "arrow-left", "Previous (h / ←)", enabled),
     navButton("next", "arrow-right", Logic.nextTooltip(current), enabled),
-    ui.label({ text = Logic.historyLabel(current), fontSize = 11, fontFamily = "monospace",
-      color = "on_surface_variant" }),
+    ui.label({ text = position, fontSize = 11, fontFamily = "monospace",
+      color = "on_surface_variant", visible = position ~= "" }),
     navButton("random", "dice", "Random (r) · or click the photo", enabled),
     ui.spacer({ flexGrow = 1 }),
     utilityButton("edit", "photo-edit", "Edit in GIMP (e)", loaded, function() startAction("edit") end),
