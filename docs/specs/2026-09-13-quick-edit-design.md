@@ -68,21 +68,37 @@ rejected whole on a malformed entry.
 `magick command not found`, like GIMP today.
 
 - Source is the library file for the id (3440 wide), never the archive original.
-- Output: `$XDG_CACHE_HOME/wali/variants/<id>.jpg` with a sidecar
-  `<id>.recipe` holding the SHA-256 of the canonical recipe JSON, the output
-  size, and the source identity (library path, size, mtime), so replacing a
-  library file invalidates its render. The `variants_dir` config key is
-  removed; the cache is the only variant location and `resolve_variant`
-  reads it.
-- A render is current when the sidecar hash matches; otherwise it is stale
-  and rerendered. A recipe removed from `edits.json` means the cache pair is
-  deleted on the next touch.
+- Output: `$XDG_CACHE_HOME/wali/variants/<id>/<key>/<id>.jpg`, where `key`
+  is the first 16 hex digits of the SHA-256 of the canonical recipe JSON, the
+  output size, and the source identity (library path, size, mtime). The file
+  name keeps the photo id as its stem (everything derives identity from the
+  stem), and the keyed directory makes every distinct render a distinct
+  path: Noctalia skips a `wallpaper-set` whose path it already shows, so a
+  re-render must never reuse the previous path. Replacing a library file
+  changes the key and so invalidates its render. The `variants_dir` config
+  key is removed; the cache is the only variant location.
+- A render is current when its keyed file exists; there is no sidecar to
+  keep in step with the pixels, so an interrupted publication can only leave
+  a missing render, never a mislabelled one. Renders for other keys of the
+  same photo are stale.
+- Stale renders are pruned only after a wallpaper change has succeeded (or
+  when the photo is not displayed): a selection, `apply`, or `reset` removes
+  the photo's other keyed directories after Noctalia accepted the new path.
+  Nothing else deletes from the cache, so a rejected change never leaves
+  Noctalia pointing at a deleted file. A photo whose recipe is gone keeps its
+  stale renders until it is next selected successfully.
 - Publication is atomic and serialised: renders happen under a
   `variants.lock` in the state dir (the existing `locked` helper), `magick`
-  writes to a temporary file in the cache dir, and only a successful render
-  is renamed over `<id>.jpg`, then the sidecar written with
-  `write_json_atomic`. A failed render leaves the previous pair untouched,
-  so a stale-but-good variant keeps displaying until a render succeeds.
+  writes to a `.tmp.jpg` temporary file in the keyed directory (the `.jpg`
+  suffix keeps the encoder's output format honest), and only a successful
+  render is renamed to `<id>.jpg`. A failed render leaves the previous
+  render untouched, so a stale-but-good variant keeps displaying until a
+  render succeeds.
+- Photo ids are validated wherever they enter from outside the library scan
+  (recipe and ratings files, command-line arguments): a single file-name
+  stem, never empty, `.`, `..`, or containing a path separator. Cache and
+  preview paths are built only from validated ids, and cache maintenance
+  lists directories rather than expanding an id inside a glob pattern.
 - `edits.json` is read-modify-written under an `edits.lock` in the state
   dir, like the ratings file. Lock order everywhere is history → edits →
   variants; a command that needs more than one acquires them in that order
@@ -99,9 +115,10 @@ rejected whole on a malformed entry.
 - Trigger: `display_path` (sampling, `earlier`, `later`) and `replay_path`
   (history replay) call `ensure_variant(id)` before returning, so a stale or
   missing render on this host is produced the first time the photo is
-  selected here. `replay_path` resolves from the id, not the recorded entry
-  path: the variant when a recipe exists, else the library file, so a reset
-  never replays a deleted cache path. `current` never renders. A render
+  selected here; after Noctalia accepts the selection, the photo's other
+  renders are pruned. `replay_path` resolves from the id, not the recorded
+  entry path: the variant when a recipe exists, else the library file, so a
+  reset never replays a stale cache path. `current` never renders. A render
   failure fails the selection command with magick's stderr; the wallpaper is
   left as it was.
 - `apply` and `reset` change the displayed file's path without changing the
@@ -122,9 +139,12 @@ walictl variant reset [<id>]                  # remove the recipe and cache, re-
 - `<id>` defaults to the displayed photo.
 - `--set` is repeated; the given set *is* the recipe (`apply` replaces, it
   does not merge). Passing a default value clears that key.
-- `preview` writes `$XDG_CACHE_HOME/wali/preview/<id>.<hash8>.jpg` and
-  deletes other previews for that id. The changing file name is deliberate:
-  `ui.image` may cache by path. The preview pipeline is rotate → resize to
+- `preview` writes `$XDG_CACHE_HOME/wali/preview/<id>/<key8>.jpg` and
+  deletes the other files in that directory. The changing file name is
+  deliberate: `ui.image` may cache by path. The render goes to a `.tmp.jpg`
+  file first and is renamed into place only on success, so a failed render
+  can never be mistaken for a reusable preview, and rendering and pruning
+  share `variants.lock`. The preview pipeline is rotate → resize to
   560 px wide → tone → blur, noise, bloom → crop, so the resize happens
   early enough to keep a slider round trip fast and late enough that the
   scale factor is known: factor = 560 / rotated source width, where the
@@ -138,27 +158,29 @@ walictl variant reset [<id>]                  # remove the recipe and cache, re-
 - `apply` runs under the history lock from the moment it reads the
   displayed wallpaper until history is updated, so the "is this photo
   displayed" answer cannot change under it. Order: render to a temporary
-  file (under `variants.lock`, released before the next step); save the
-  recipe (under `edits.lock`); publish the temporary file over the cache
-  pair (under `variants.lock` again); re-set the wallpaper
-  through Noctalia when the photo is displayed; update the history entry's
-  path. Failure at each step: a render failure saves and publishes nothing;
-  a recipe-save failure deletes the temporary file and leaves the old cache
-  and the old recipe intact; a publish failure after the save leaves the
-  recipe saved and the old cache in place with a now-stale sidecar, so the
-  next selection rerenders it, and the error is reported; a rejected
-  wallpaper change leaves the recipe and the new cache in place (the next
-  selection uses them) and reports the error.
+  file in the new keyed directory (under `variants.lock`, released before
+  the next step); save the recipe (under `edits.lock`); publish the
+  temporary file as `<id>.jpg` in that directory (under `variants.lock`
+  again); re-set the wallpaper through Noctalia when the photo is displayed;
+  update the history entry's path; prune the photo's other renders (under
+  `variants.lock`). Failure at each step: a render failure saves and
+  publishes nothing; a recipe-save failure deletes the temporary file and
+  leaves the old render and the old recipe intact; a publish failure after
+  the save leaves the recipe saved and no current render, so the next
+  selection renders it, and the error is reported; a rejected wallpaper
+  change leaves the recipe and the new render in place, skips the prune (the
+  old render is what Noctalia still shows), and reports the error. Applying
+  the same recipe twice is a no-op render (the keyed file exists) and still
+  re-sets and prunes.
 - `reset` runs under the same locks in the same order: remove the recipe
   (under `edits.lock`); re-set the library file through Noctalia when the
-  photo is displayed; update the history entry's path; delete the cache
-  pair last. The cache is never deleted before the replacement has
-  succeeded, so a rejected change never leaves Noctalia pointing at a
-  deleted file: the recipe removal stands, the cache stays, the error is
-  reported, and the next selection of that photo (which now resolves to the
-  library file) deletes the pair. `reset` on a photo without a recipe is
-  `no recipe: <id>`. History is not pushed by `apply` or `reset` (the photo
-  did not change; see Rendering).
+  photo is displayed; update the history entry's path; prune every render
+  of the photo last, and only when the photo is not displayed or the change
+  succeeded. A rejected change leaves the recipe removed, the renders in
+  place, and the error reported; the next successful selection of that
+  photo (which now resolves to the library file) prunes them. `reset` on a
+  photo without a recipe is `no recipe: <id>`. History is not pushed by
+  `apply` or `reset` (the photo did not change; see Rendering).
 - `walictl edit` keeps opening GIMP.
 
 ### Panel: edit mode
@@ -173,6 +195,11 @@ walictl variant reset [<id>]                  # remove the recipe and cache, re-
   is displayed by then. Each session carries a generation number; a preview
   callback whose generation is not the current one is dropped, so Cancel or
   reopening on another photo cannot paint a stale preview into the frame.
+- Controls stay live while a preview renders: the sliders and toggles are
+  enabled whenever the draft is seeded, so a change made during a preview is
+  the coalesced follow-up described below; only Apply and Reset wait for the
+  panel to be idle, and everything is disabled while the draft is loading or
+  an apply/reset is running.
 - Layout in edit mode: the frame shrinks to 200 px (`fit = "contain"`) and
   shows the latest preview, or the current photo until the first preview
   lands; below it a `ui.scroll` holds one row per slider (label, `ui.slider`
@@ -205,14 +232,17 @@ open so the controls are not lost.
   input to the output: recipe validation and canonical hashing; the argv
   built for each key and for the crop box for every anchor at both landscape
   and portrait sources; the preview scaling of pixel-unit parameters and its
-  crop; `ensure_variant` renders when missing, skips when the hash matches,
-  rerenders when stale or when the source changed, and deletes the pair when
-  the recipe is gone; a failed render leaves the previous pair; navigation
+  crop; `ensure_variant` renders when missing, skips when the keyed file
+  exists, rerenders under a new path when the recipe or the source changed,
+  and never deletes; pruning runs only after a successful wallpaper change;
+  a failed render leaves the previous render; two consecutive applies with
+  different recipes produce two distinct paths; recipe and ratings files and
+  command arguments reject ids that are not a single stem; navigation
   with `edits_file` unset never invokes the stub; `apply` and `reset` re-set
   the wallpaper only when the photo is current and rewrite the history
   entry's path rather than pushing; `apply` with a failing recipe save
-  leaves the old cache and recipe; `reset` with a rejected wallpaper change
-  keeps the cache; `apply` and `reset` hold the history lock across the
+  leaves the old render and recipe; `reset` with a rejected wallpaper change
+  keeps the renders, and so does a rejected selection that follows it; `apply` and `reset` hold the history lock across the
   wallpaper change (the pattern `test_navigation_holds_the_history_lock`
   uses); `preview` prunes older previews; every config error message.
 - One pytest against the real `magick`, skipped when it is not on `PATH`:
