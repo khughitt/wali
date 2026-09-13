@@ -119,12 +119,13 @@ function M.decodeHidden(text, decoder)
   return M.validateHidden(payload)
 end
 
-function M.hideGlyph(hidden)
-  return hidden and "eye" or "eye-off"
+function M.hideGlyph(hidden, hovering)
+  if (hidden and true or false) ~= (hovering and true or false) then return "eye-off" end
+  return "eye"
 end
 
 function M.hideTooltip(hidden)
-  return hidden and "Restore (x)" or "Hide (x) · right-click: hidden list"
+  return hidden and "Restore (x)" or "Hide (x)"
 end
 
 return M

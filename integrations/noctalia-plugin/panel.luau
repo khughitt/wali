@@ -3,7 +3,7 @@ local Shell = require("./shell.luau")
 
 local state = {
   busy = false, loading = false, keepError = false, errorText = nil, current = nil,
-  view = "photo", hiddenList = nil,
+  view = "photo", hiddenList = nil, hoverHide = false,
 }
 
 local render
@@ -190,6 +190,11 @@ function onHiddenMenu(actionId, _context)
   if actionId == "show-hidden" then openHiddenList() end
 end
 
+local function onHideHover(hovered, _key)
+  state.hoverHide = hovered == "true"
+  render()
+end
+
 local function openHideMenu()
   panel.openContextMenu({
     items = { { id = "show-hidden", label = "Show hidden…" } },
@@ -209,9 +214,9 @@ local function navButton(key, glyph, tooltip, enabled)
     width = 56, tooltip = tooltip, enabled = enabled, onClick = function() startAction(key) end })
 end
 
-local function utilityButton(key, glyph, tooltip, enabled, onClick, onRightClick)
+local function utilityButton(key, glyph, tooltip, enabled, onClick, onRightClick, onHover)
   return ui.button({ key = key, glyph = glyph, glyphSize = 16, variant = "ghost", controlSize = "sm",
-    tooltip = tooltip, enabled = enabled, onClick = onClick, onRightClick = onRightClick })
+    tooltip = tooltip, enabled = enabled, onClick = onClick, onRightClick = onRightClick, onHover = onHover })
 end
 
 local function hiddenRow(item, enabled)
@@ -304,7 +309,7 @@ local function caption(current, enabled)
     }),
     swatches(),
     ui.button({ key = "favorite", glyph = Logic.favoriteGlyph(favorite), glyphSize = 22,
-      selected = favorite == true, variant = "ghost", controlSize = "md",
+      variant = "ghost", controlSize = "md",
       tooltip = favorite and "Remove favorite (f)" or "Favorite (f)",
       enabled = enabled and current ~= nil, onClick = function() startAction("favorite") end }),
   })
@@ -320,7 +325,7 @@ local function actions(current, enabled)
       color = "on_surface_variant", visible = position ~= "" }),
     navButton("random", "dice", "Random (r) · or click the photo", enabled),
     ui.spacer({ flexGrow = 1 }),
-    utilityButton("hide", Logic.hideGlyph(current ~= nil and current.hidden), Logic.hideTooltip(current ~= nil and current.hidden), loaded, hideOrRestore, openHideMenu),
+    utilityButton("hide", Logic.hideGlyph(current ~= nil and current.hidden, state.hoverHide), Logic.hideTooltip(current ~= nil and current.hidden), loaded, hideOrRestore, openHideMenu, onHideHover),
     utilityButton("edit", "photo-edit", "Edit in GIMP (e)", loaded, function() startAction("edit") end),
     utilityButton("copy", "clipboard", "Copy source path (y)", current ~= nil, copyPath),
     utilityButton("help", "keyboard", "Keyboard shortcuts (? / F1)", true, toggleHelp),
@@ -340,6 +345,7 @@ end
 function onOpen(_context)
   state.view = "photo"
   state.hiddenList = nil
+  state.hoverHide = false
   refresh()
 end
 

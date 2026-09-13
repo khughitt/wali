@@ -59,7 +59,8 @@ position beside Next (its tooltip says "sample" when Next would leave history),
 and Hide, Edit, Copy, and keyboard help as quiet ghost buttons on the right. Colors
 come from Noctalia's palette, which it derives from the wallpaper.
 
-Hide (`eye-off`) sits with the other quiet buttons. A click runs `walictl hide`,
+Hide (`eye`, turning into `eye-off` on hover to preview the action) sits with
+the other quiet buttons. A click runs `walictl hide`,
 which records the hide and samples a replacement; the panel re-reads the
 metadata whether or not the replacement succeeded, so a failure ("every photo
 is hidden") stays in the caption. Right-click the button, or press `shift+x`,
