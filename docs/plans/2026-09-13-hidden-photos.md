@@ -1018,23 +1018,54 @@ local restoreRow = assert(button(rendered, "restore:gone"))
 restoreRow.props.onClick()
 equal(runs[#runs].command, Shell.command(Logic.unhideCommand("gone")))
 runs[#runs].callback(success("unhidden gone"))
-equal(runs[#runs].command, Shell.command(commands.hidden), "restore from the list must reload the list")
+equal(runs[#runs].command, Shell.command(commands.current), "restore from the list must re-read current first")
+runs[#runs].callback(success("with source"))
+equal(runs[#runs].command, Shell.command(commands.hidden), "restore from the list must then reload the list")
 runs[#runs].callback(success("empty list"))
 assert(find(rendered, "scroll") == nil)
 local empty = false
 for _, text in ipairs(labels(rendered)) do if text == "Nothing hidden" then empty = true end end
 assert(empty, "empty list must say so")
 
--- keyboard: shift+x toggles the list, x hides from the photo view
+-- restoring the displayed photo from the list updates the caption
+onOpen({})
+runs[#runs].callback(success("hidden current"))
 onKey("shift+x", true)
-assert(find(rendered, "image") ~= nil, "shift+x must leave the list view")
+runs[#runs].callback(success("hidden list"))
+onHiddenMenu("show-hidden", nil) -- a second open while idle just reloads
+runs[#runs].callback(success("hidden list"))
+assert(button(rendered, "restore:PXL_20260101_000000000")).props.onClick()
+runs[#runs].callback(success("unhidden PXL_20260101_000000000"))
+equal(runs[#runs].command, Shell.command(commands.current))
+runs[#runs].callback(success("with source"))
+runs[#runs].callback(success("empty list"))
+onKey("x", true)
+assert(find(rendered, "image") ~= nil, "x must close the list view")
+equal(assert(button(rendered, "hide")).props.glyph, "eye-off", "caption state must follow the re-read current")
+
+-- opening the list while a command is busy is ignored, so no loader is left behind
+assert(button(rendered, "next")).props.onClick()
+local busyRuns = #runs
+onKey("shift+x", true)
+equal(#runs, busyRuns, "list must not load while busy")
+assert(find(rendered, "image") ~= nil, "view must not change while busy")
+onHiddenMenu("show-hidden", nil)
+assert(find(rendered, "image") ~= nil, "menu action must not change the view while busy")
+runs[#runs].callback(success())
+runs[#runs].callback(success("with source"))
+
+-- keyboard: shift+x toggles the list, x hides from the photo view and closes the list
 onKey("shift+x", true)
 assert(find(rendered, "image") == nil, "shift+x must open the list view")
 runs[#runs].callback(success("empty list"))
+onKey("shift+x", true)
+assert(find(rendered, "image") ~= nil, "shift+x must leave the list view")
+onKey("shift+x", true)
+runs[#runs].callback(success("empty list"))
 local hideCount = #runs
 onKey("x", true)
-equal(#runs, hideCount, "x must not hide from the list view")
-onKey("shift+x", true)
+equal(#runs, hideCount, "x in the list view closes it without hiding")
+assert(find(rendered, "image") ~= nil)
 onKey("x", true)
 equal(runs[#runs].command, Shell.command(commands.hide))
 runs[#runs].callback(success("hidden PXL_20260820_000000000"))
@@ -1079,7 +1110,7 @@ refresh = function(keepError)
 end
 ```
 
-and in `finishCurrent`, replace the success branch so a kept error survives:
+and in `finishCurrent`, replace the success branch so a kept error survives, and reload the hidden list when that view is open (the restore-from-list path relies on this):
 
 ```lua
   else
@@ -1088,7 +1119,10 @@ and in `finishCurrent`, replace the success branch so a kept error survives:
   end
   state.keepError = false
   render()
+  if state.view == "hidden" then loadHidden() end
 ```
+
+`loadHidden` is defined further down; declare it at the top next to `render` and `refresh` (`local loadHidden`) and assign it with `loadHidden = function() ... end` instead of `local function loadHidden()`.
 
 In `finishAction`, make `hide` refresh on failure too, keeping the error:
 
@@ -1149,6 +1183,9 @@ local function loadHidden()
 end
 
 local function openHiddenList()
+  -- The view flips only when the load can start; otherwise a busy command
+  -- would leave the list view showing a loader that nothing completes.
+  if not Logic.canStart(state.busy) then return end
   state.view = "hidden"
   loadHidden()
 end
@@ -1163,7 +1200,7 @@ local function toggleHiddenList()
   if state.view == "hidden" then closeHiddenList() else openHiddenList() end
 end
 
-local function startUnhide(photoId, thenReload)
+local function startUnhide(photoId)
   if not Logic.canStart(state.busy) then return end
   state.busy = true
   state.errorText = nil
@@ -1176,7 +1213,9 @@ local function startUnhide(photoId, thenReload)
       render()
       return
     end
-    if thenReload then loadHidden() else refresh() end
+    -- Always re-read current first: the restored photo may be the displayed
+    -- one. finishCurrent reloads the list afterwards when the list is open.
+    refresh()
   end)
   if not launched then
     state.busy = false
@@ -1188,7 +1227,7 @@ end
 local function hideOrRestore()
   if not state.current then return end
   if state.current.hidden then
-    startUnhide(state.current.id, false)
+    startUnhide(state.current.id)
   else
     startAction("hide")
   end
@@ -1222,7 +1261,7 @@ local function hiddenRow(item, enabled)
       ui.label({ text = item.id, fontSize = 11, fontFamily = "monospace", color = "on_surface_variant", maxLines = 1 }),
     }),
     ui.button({ key = "restore:" .. item.id, glyph = "eye", glyphSize = 16, variant = "ghost", controlSize = "sm",
-      tooltip = "Restore", enabled = enabled, onClick = function() startUnhide(item.id, true) end }),
+      tooltip = "Restore", enabled = enabled, onClick = function() startUnhide(item.id) end }),
   })
 end
 
@@ -1294,7 +1333,7 @@ function onKey(chord, pressed)
   elseif chord == "shift+x" then
     toggleHiddenList()
   elseif chord == "x" then
-    if state.view == "photo" then hideOrRestore() end
+    if state.view == "hidden" then closeHiddenList() elseif state.view == "photo" then hideOrRestore() end
   elseif chord == "y" then
     copyPath()
   elseif keyActions[chord] then
@@ -1347,9 +1386,18 @@ git commit -m "feat(panel): hide photos and browse the hidden list"
 
 **Files:** none unless review asks for changes.
 
-- [ ] **Step 1: Load the branch**
+- [ ] **Step 1: Load the branch — plugin and CLI**
 
-As in the pass-2 plan's review task: point `~/.config/noctalia/plugins/wali-panel` at this worktree's `integrations/noctalia-plugin`, then `noctalia msg plugins disable khughitt/wali-panel && noctalia msg plugins enable khughitt/wali-panel` (the manifest changed, so hot reload is not enough).
+The panel runs `walictl` by name. `~/bin/walictl` is a copy of the dotfiles shim (`~/d/dotfiles/bin/walictl`, identical bytes) that execs `~/d/wali/bin/walictl`, the main checkout, which has no `hide` and no `current.hidden` until this branch merges. Point both the plugin and the CLI at the worktree for the review, from the worktree root:
+
+```bash
+ln -sfn "$(pwd)/integrations/noctalia-plugin" ~/.config/noctalia/plugins/wali-panel
+printf '#!/usr/bin/env bash\n# review shim: restored from ~/d/dotfiles/bin/walictl afterwards\nexec "%s/bin/walictl" "$@"\n' "$(pwd)" > ~/bin/walictl
+walictl hidden --json   # proves the shell reaches the worktree CLI
+noctalia msg plugins disable khughitt/wali-panel && noctalia msg plugins enable khughitt/wali-panel
+```
+
+`~/bin` is first on `PATH`, and Noctalia inherited that `PATH`, so the running process picks up the new shim on its next `walictl` call without a restart. The manifest changed, so the disable/enable is required; hot reload is not enough.
 
 - [ ] **Step 2: Walk the spec's manual check**
 
@@ -1361,4 +1409,13 @@ Hide from the panel and confirm the wallpaper changes; open the hidden list by r
 tasks park <step-7-id> "Panel loaded from the worktree; judge the hide button placement, the context menu, and the hidden list rows" --waiting-on user --reason review
 ```
 
-After review: restore the plugin link to `~/d/wali/integrations/noctalia-plugin`, re-enable the plugin, and `tasks done <step-7-id> "hidden photos verified on the running panel"`.
+After review, restore both and re-enable:
+
+```bash
+cp ~/d/dotfiles/bin/walictl ~/bin/walictl
+ln -sfn "$HOME/d/wali/integrations/noctalia-plugin" ~/.config/noctalia/plugins/wali-panel
+noctalia msg plugins disable khughitt/wali-panel && noctalia msg plugins enable khughitt/wali-panel
+tasks done <step-7-id> "hidden photos verified on the running panel"
+```
+
+Do this before the branch merges only if the review is finished; otherwise the main checkout's CLI lacks `hide` and the merged panel would fail its first hide.
