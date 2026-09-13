@@ -1,12 +1,13 @@
 ---
 id: wali-0fe239
 title: "Wali panel: downvote/hide button with a reviewable hidden list"
-status: todo
+status: done
 priority: 2
 size: m
 complexity: mid
 created: 2026-09-13T16:33:37Z
-updated: 2026-09-13T17:45:19Z
+updated: 2026-09-13T20:53:06Z
+completed: 2026-09-13T20:53:06Z
 depends: []
 tags: [noctalia, wallpaper]
 spec: docs/specs/2026-09-13-hidden-photos-design.md
@@ -18,3 +19,4 @@ Add a button to the wali panel to downvote or hide the current image so it stops
 ## Notes
 
 - 2026-09-13T16:50:03Z (panel-scope): Scoped 2026-09-13: spec at docs/specs/2026-09-13-hidden-photos-design.md; ratings file v2 with a hidden map, hide/unhide/hidden commands, panel hide button + hidden list view.
+- 2026-09-13T20:53:06Z (panel-scope): hidden photos landed on panel-scope: ratings v2 with a hidden set, hide/unhide/hidden commands, sampler and neighbour exclusion, panel hide button, context menu, and hidden list; reviewed on the rendered panel
