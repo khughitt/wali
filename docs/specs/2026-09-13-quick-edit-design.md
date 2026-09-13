@@ -138,8 +138,9 @@ walictl variant reset [<id>]                  # remove the recipe and cache, re-
 - `apply` runs under the history lock from the moment it reads the
   displayed wallpaper until history is updated, so the "is this photo
   displayed" answer cannot change under it. Order: render to a temporary
-  file (under `variants.lock`); save the recipe (under `edits.lock`);
-  publish the temporary file over the cache pair; re-set the wallpaper
+  file (under `variants.lock`, released before the next step); save the
+  recipe (under `edits.lock`); publish the temporary file over the cache
+  pair (under `variants.lock` again); re-set the wallpaper
   through Noctalia when the photo is displayed; update the history entry's
   path. Failure at each step: a render failure saves and publishes nothing;
   a recipe-save failure deletes the temporary file and leaves the old cache
