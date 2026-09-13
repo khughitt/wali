@@ -137,7 +137,7 @@ end
 
 local function swatches()
   return ui.row({ align = "center", gap = 4 }, {
-    swatch("primary"), swatch("secondary"), swatch("tertiary"), swatch("surface"),
+    swatch("primary"), swatch("secondary"), swatch("tertiary"),
   })
 end
 

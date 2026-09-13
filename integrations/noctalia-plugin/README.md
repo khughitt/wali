@@ -49,8 +49,8 @@ notification showing the result or error. These require `notify-send`.
 - GIMP for the Edit button.
 
 The panel is photo-first: the image sits in a bordered frame and clicking it
-samples a random photo. The caption shows the capture date and photo id, four
-palette swatches (primary, secondary, tertiary, surface) so the photo-to-palette
+samples a random photo. The caption shows the capture date and photo id, three
+palette swatches (primary, secondary, tertiary) so the photo-to-palette
 relationship is visible, and the favorite heart. The action strip has Previous,
 Next, and Random as ghost buttons on the left, with a `cursor/length` history
 position beside Next (its tooltip says "sample" when Next would leave history),

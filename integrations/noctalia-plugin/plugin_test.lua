@@ -262,7 +262,7 @@ local seen = {}
 for _, text in ipairs(labels(rendered)) do seen[text] = true end
 assert(seen["4/4"], "history position label missing")
 equal(assert(button(rendered, "next")).props.tooltip, "Next: sample (l / →)")
-equal(boxes(rendered), { "primary", "secondary", "tertiary", "surface" })
+equal(boxes(rendered), { "primary", "secondary", "tertiary" })
 
 local photo = assert(find(rendered, "image"))
 assert(type(photo.props.onClick) == "function", "photo click must sample")
