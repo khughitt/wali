@@ -914,6 +914,76 @@ def test_favorite_concurrent_additions_both_land(walictl: ModuleType, env: dict[
     assert walictl.Ratings.load(env["favorites"]).favorite_ids() == ["PXL_20210608_111152739", "PXL_20210609_120000000"]
 
 
+def test_hide_current_records_then_samples(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia) -> None:
+    code, stdout, stderr = run_cli(walictl, ["hide", "--seed", "3"])
+    assert (code, stderr) == (0, "")
+    history = load_history(walictl)
+    assert stdout == f"hidden PXL_20210608_111152739\nrandom: {history.entries[1].id}\n"
+    assert [e.origin for e in history.entries] == ["observed", "random"]
+    assert history.entries[1].id != "PXL_20210608_111152739"
+    assert walictl.Ratings.load(env["favorites"]).hidden_ids() == ["PXL_20210608_111152739"]
+    assert json.loads(run_cli(walictl, ["current", "--json"])[1])["hidden"] is False
+
+
+def test_hide_other_id_records_only(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia) -> None:
+    code, stdout, _ = run_cli(walictl, ["hide", "PXL_20220402_162957459"])
+    assert (code, stdout) == (0, "hidden PXL_20220402_162957459\n")
+    assert noctalia.default == env["wallpapers"] / "PXL_20210608_111152739.jpg"
+    assert load_history(walictl).entries == []
+    assert run_cli(walictl, ["hide", "PXL_20220402_162957459"])[1] == "hidden PXL_20220402_162957459\n"
+    code, _, stderr = run_cli(walictl, ["hide", "nope"])
+    assert (code, stderr) == (1, "unknown photo id: nope\n")
+
+
+def test_hide_refuses_a_favorite(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia) -> None:
+    run_cli(walictl, ["favorite", "--add", "PXL_20210608_111152739"])
+    code, stdout, stderr = run_cli(walictl, ["hide"])
+    assert (code, stdout, stderr) == (1, "", "unfavorite first: PXL_20210608_111152739\n")
+    assert walictl.Ratings.load(env["favorites"]).hidden_ids() == []
+
+
+def test_hide_last_visible_photo_keeps_the_hide_and_reports_replacement_failure(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia
+) -> None:
+    ratings_of(walictl, hidden=("PXL_20210609_120000000", "PXL_20220402_162957459")).save(env["favorites"])
+    code, stdout, stderr = run_cli(walictl, ["hide"])
+    assert (code, stdout, stderr) == (1, "hidden PXL_20210608_111152739\n", "every photo is hidden\n")
+    assert walictl.Ratings.load(env["favorites"]).hidden_ids() == [
+        "PXL_20210608_111152739", "PXL_20210609_120000000", "PXL_20220402_162957459",
+    ]
+    assert json.loads(run_cli(walictl, ["current", "--json"])[1])["hidden"] is True
+
+
+def test_hide_keeps_the_hide_when_noctalia_rejects_the_replacement(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia
+) -> None:
+    noctalia.reject_set = "busy"
+    code, stdout, stderr = run_cli(walictl, ["hide", "--seed", "3"])
+    assert code == 1 and stdout == "hidden PXL_20210608_111152739\n" and "busy" in stderr
+    assert walictl.Ratings.load(env["favorites"]).hidden_ids() == ["PXL_20210608_111152739"]
+
+
+def test_unhide_restores_and_rejects_unknown(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia) -> None:
+    run_cli(walictl, ["hide", "PXL_20220402_162957459"])
+    assert run_cli(walictl, ["unhide", "PXL_20220402_162957459"])[1] == "unhidden PXL_20220402_162957459\n"
+    assert walictl.Ratings.load(env["favorites"]).hidden_ids() == []
+    code, _, stderr = run_cli(walictl, ["unhide", "PXL_20220402_162957459"])
+    assert (code, stderr) == (1, "not hidden: PXL_20220402_162957459\n")
+
+
+def test_hidden_json_mirrors_favorites_json(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia) -> None:
+    ratings_of(walictl, hidden=("PXL_20210608_111152739", "PXL_20210919_170859013")).save(env["favorites"])
+    code, stdout, _ = run_cli(walictl, ["hidden", "--json"])
+    assert code == 0
+    assert json.loads(stdout) == {
+        "ok": True,
+        "hidden": [
+            {"id": "PXL_20210608_111152739", "added": "T", "date": "2021-06-08", "display_date": "June 8, 2021", "path": str(env["wallpapers"] / "PXL_20210608_111152739.jpg"), "source_path": str(env["archive"] / "2021" / "06" / "PXL_20210608_111152739.jpg"), "exists": True},
+            {"id": "PXL_20210919_170859013", "added": "T", "date": "2021-09-19", "display_date": "September 19, 2021", "path": None, "source_path": None, "exists": False},
+        ],
+    }
+
+
 def test_favorites_json_lists_paths_and_existence(
     walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, tmp_path: Path
 ) -> None:
@@ -932,9 +1002,9 @@ def test_favorites_json_lists_paths_and_existence(
     assert json.loads(stdout) == {
         "ok": True,
         "favorites": [
-            {"id": "PXL_20210608_111152739", "added": "T1", "path": str(env["wallpapers"] / "PXL_20210608_111152739.jpg"), "source_path": str(env["archive"] / "2021" / "06" / "PXL_20210608_111152739.jpg"), "exists": True},
-            {"id": "PXL_20210609_120000000", "added": "T3", "path": str((variants / "PXL_20210609_120000000.png").resolve()), "source_path": None, "exists": True},
-            {"id": "PXL_20210919_170859013", "added": "T2", "path": None, "source_path": None, "exists": False},
+            {"id": "PXL_20210608_111152739", "added": "T1", "date": "2021-06-08", "display_date": "June 8, 2021", "path": str(env["wallpapers"] / "PXL_20210608_111152739.jpg"), "source_path": str(env["archive"] / "2021" / "06" / "PXL_20210608_111152739.jpg"), "exists": True},
+            {"id": "PXL_20210609_120000000", "added": "T3", "date": "2021-06-09", "display_date": "June 9, 2021", "path": str((variants / "PXL_20210609_120000000.png").resolve()), "source_path": None, "exists": True},
+            {"id": "PXL_20210919_170859013", "added": "T2", "date": "2021-09-19", "display_date": "September 19, 2021", "path": None, "source_path": None, "exists": False},
         ],
     }
 

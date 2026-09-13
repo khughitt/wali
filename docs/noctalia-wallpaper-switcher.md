@@ -33,7 +33,7 @@ verify the exported effective config has wallpaper automation disabled.
 ## Commands
 
 ```
-walictl current --json      # id, date, path, source_path, variant_path, favorite, history
+walictl current --json      # id, date, path, source_path, variant_path, favorite, hidden, history
 walictl next                # forward in history, else a weighted sample
 walictl previous            # back in history
 walictl earlier             # previous photo by capture time
@@ -41,6 +41,9 @@ walictl later               # next photo by capture time
 walictl random              # a weighted sample
 walictl favorite            # toggle the current photo; --add/--remove [<id>]
 walictl favorites --json
+walictl hide [<id>]         # hide from sampling; when it is displayed, sample a replacement
+walictl unhide <id>         # restore a hidden photo
+walictl hidden --json       # hidden photos, same item shape as favorites
 walictl neighbors --json    # capture-time neighbours, for mind6; --count must be non-negative
 walictl edit                # GIMP on the original, else on the display file
 walictl observe             # hook entry point
@@ -69,5 +72,15 @@ photos weigh 0. `exclude_recent` must be a non-negative integer; both boosts
 must be finite non-negative numbers, and an overflowing total weight is an
 error. History records selections Noctalia accepted; only the default
 (all-monitor) wallpaper is tracked.
+
+Hidden photos live beside favorites in the same synced file (version 2, with
+`favorites` and `hidden` maps); a photo is in at most one set, and `hide`,
+`favorite`, and `import-favorites` refuse to move one across without an
+explicit `unhide` or `--remove`. Hidden photos are never sampled, `earlier`,
+`later`, and `neighbors` step over them, and history replay does not filter
+them: `current --json` reports `hidden` so a replayed hidden photo is visible
+as such. `hide` records first and then replaces the displayed photo; if no
+visible photo remains or Noctalia rejects the change, the hide stands and the
+command exits 1.
 
 Design: `docs/specs/2026-09-07-wallpaper-management-redesign-design.md` in the dotfiles repo, where the redesign was done.
