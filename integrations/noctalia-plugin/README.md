@@ -56,7 +56,7 @@ palette swatches (primary, secondary, tertiary) so the photo-to-palette
 relationship is visible, and the favorite heart. The action strip has Previous,
 Next, and Random as ghost buttons on the left, with a `cursor/length` history
 position beside Next (its tooltip says "sample" when Next would leave history),
-and Edit, Copy, and keyboard help as quiet ghost buttons on the right. Colors
+and Hide, Edit, Copy, and keyboard help as quiet ghost buttons on the right. Colors
 come from Noctalia's palette, which it derives from the wallpaper.
 
 Hide (`eye-off`) sits with the other quiet buttons. A click runs `walictl hide`,

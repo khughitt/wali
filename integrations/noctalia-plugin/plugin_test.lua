@@ -452,6 +452,20 @@ local empty = false
 for _, text in ipairs(labels(rendered)) do if text == "Nothing hidden" then empty = true end end
 assert(empty, "empty list must say so")
 
+-- an error from restoring a listed photo survives the list reload that follows it
+onHiddenMenu("show-hidden", nil)
+runs[#runs].callback(success("hidden list"))
+assert(button(rendered, "restore:gone")).props.onClick()
+equal(runs[#runs].command, Shell.command(Logic.unhideCommand("gone")))
+runs[#runs].callback(success("unhidden gone"))
+equal(runs[#runs].command, Shell.command(commands.current))
+runs[#runs].callback({ exitCode = 1, stdout = "", stderr = "current broke", timedOut = false })
+equal(runs[#runs].command, Shell.command(commands.hidden), "the list still reloads after a failed refresh")
+runs[#runs].callback(success("empty list"))
+local stillVisible = false
+for _, text in ipairs(labels(rendered)) do if text == "current broke" then stillVisible = true end end
+assert(stillVisible, "an error from the current re-read must survive the list reload")
+
 -- restoring the displayed photo from the list updates the caption
 onOpen({})
 runs[#runs].callback(success("hidden current"))

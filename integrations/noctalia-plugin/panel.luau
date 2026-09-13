@@ -117,7 +117,6 @@ local function finishHidden(result)
     state.errorText = message
   else
     state.hiddenList = items
-    state.errorText = nil
   end
   render()
 end
@@ -126,7 +125,6 @@ loadHidden = function()
   if not Logic.canStart(state.busy) then return end
   state.busy = true
   state.hiddenList = nil
-  state.errorText = nil
   render()
   if not run(Logic.commandFor("hidden"), finishHidden) then
     state.busy = false
@@ -140,6 +138,7 @@ local function openHiddenList()
   -- The view flips only when the load can start; otherwise a busy command
   -- would leave the list view showing a loader that nothing completes.
   if not Logic.canStart(state.busy) then return end
+  state.errorText = nil
   state.view = "hidden"
   loadHidden()
 end
