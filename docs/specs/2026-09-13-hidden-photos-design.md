@@ -32,10 +32,14 @@ one host applies everywhere.
   `hidden` key) and writes version 2 on the next save; any other version is an
   error, as today. Version 1 acceptance is a one-time upgrade path, not a
   compatibility layer to keep: remove it once both hosts have written version 2.
-- A photo is in at most one set. `hide` refuses a favorite
-  (`unfavorite first: <id>`) and `favorite --add` refuses a hidden photo
-  (`unhide first: <id>`). Refusing rather than moving keeps an accidental hide
-  from silently erasing a favorite.
+- A photo is in at most one set, and every writer enforces it. `load` rejects
+  a file whose sets overlap (`photo in both favorites and hidden: <id>`).
+  `hide` refuses a favorite (`unfavorite first: <id>`); `favorite` with
+  `--add`, and the plain toggle when it would add, refuse a hidden photo
+  (`unhide first: <id>`). `import-favorites --force` keeps the existing
+  `hidden` map and refuses when an imported id is hidden, listing the
+  conflicts. Refusing rather than moving keeps an accidental hide from
+  silently erasing a favorite.
 - The config key and file name keep their `favorites` names. Renaming them
   means a dotfiles change on every host for no behavioural gain.
 
@@ -47,22 +51,31 @@ walictl unhide <id>        # restore
 walictl hidden --json      # {ok, hidden: [{id, added, path, source_path, exists}]}
 ```
 
-- `hide` with no id acts on the displayed photo. When the hidden photo is the
-  one on screen, the command continues as `random` (a weighted sample,
-  discarding forward history) so the screen never keeps showing what was just
-  hidden. Output: `hidden <id>` on one line, then the selection line `random`
-  prints. Hiding another id records only.
+- `hide` with no id acts on the displayed photo. The hide is saved first.
+  When the hidden photo is the one on screen, the command then continues as
+  `random` (a weighted sample, discarding forward history) so the screen does
+  not keep showing what was just hidden. Output: `hidden <id>` on one line,
+  then the selection line `random` prints. Hiding another id records only.
+- Replacement can fail: the last visible photo was just hidden, or Noctalia
+  rejects the change. The hide stays recorded; the command reports
+  `hidden <id>` on stdout, then the replacement error on stderr, exit 1. The
+  panel refreshes metadata after `hide` regardless of exit status, so the
+  caption shows both the `hidden` state and the error.
 - `hidden --json` mirrors `favorites --json` item for item, so the panel list
   and any script can render thumbnails from `path`.
-- `current --json` gains `"hidden": <bool>`, true only when history replay has
-  landed on a hidden photo.
+- `current --json` gains `"hidden": <bool>`: membership in the hidden set,
+  however the photo came to be displayed (history replay, a failed
+  replacement, or a hide made on another host).
 
 ### Selection
 
-- `weights` gives hidden photos weight 0, like recent ones, so `next` at the
-  end of history, `random`, and the timer never sample them. Hidden photos
-  still count toward a month's `photos_per_month` denominator; the density
-  boost is about the period, not about the photo.
+- Hidden photos are removed from the candidate list before weighting, not
+  given weight 0: `sample` falls back to a uniform draw over every candidate
+  when all weights are 0 (everything recent), and that fallback must not
+  surface a hidden photo. Month density is still computed over the full
+  library, so hiding a photo does not change its month's boost. With no
+  visible candidates the command fails (`every photo is hidden`); the
+  all-recent fallback relaxes only the recency exclusion.
 - `earlier` and `later` step over hidden photos: they walk the library, and a
   hidden photo is out of the library for viewing purposes. The position is
   taken from the full dated order (so a hidden photo reached through history
@@ -88,7 +101,7 @@ walictl hidden --json      # {ok, hidden: [{id, added, path, source_path, exists
   and id, and a ghost "Restore" button that runs `walictl unhide <id>` and
   re-reads the list. An empty list shows "Nothing hidden". `x`, `shift+x`, or
   the help toggle leaves the view.
-- When `current.hidden` is true (history replay), the caption detail line says
+- When `current.hidden` is true, the caption detail line says
   `hidden` in `tertiary` and the hide button becomes a `Restore` (`eye`)
   action for that photo.
 
@@ -100,11 +113,15 @@ photo, and `unhide` of a photo that is not hidden (`not hidden: <id>`).
 
 ## Testing
 
-- pytest: ratings round trip and version-1 upgrade; refusal in both
-  directions; `hide` of the displayed photo samples and pushes history; `hide`
-  of another id leaves the wallpaper alone; weights zero for hidden; earlier,
-  later, and neighbors skip hidden; `current --json` reports `hidden`;
-  `hidden --json` contract.
+- pytest: ratings round trip, version-1 upgrade, and overlap rejection on
+  load; refusal from `hide`, `favorite --add`, the plain toggle, and
+  `import-favorites --force` (which also preserves `hidden`); `hide` of the
+  displayed photo samples and pushes history; `hide` of another id leaves
+  the wallpaper alone; hiding the last visible photo records the hide and
+  exits 1; a rejected replacement keeps the hide; hidden ids never sampled,
+  including in the all-recent uniform fallback; earlier, later, and
+  neighbors skip hidden; `current --json` reports `hidden` for a photo
+  hidden while displayed; `hidden --json` contract.
 - `plugin_test.lua`: `Logic.commandFor` for `hide`, `unhide`, `hidden`;
   `validateCurrent` accepts and requires the boolean `hidden` field;
   `decodeHidden` validates the list payload; the glyph and tooltip helpers for
