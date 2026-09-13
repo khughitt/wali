@@ -48,17 +48,20 @@ notification showing the result or error. These require `notify-send`.
 - `walictl` on `PATH`, configured through `$XDG_CONFIG_HOME/wali/config.toml`.
 - GIMP for the Edit button.
 
-The panel is photo-first: the image sits in a bordered frame, the caption shows
-the capture date and photo id with the favorite heart beside them, and the
-action strip has Previous, Next, and Random on the left with Refresh, Edit, and
-Copy and keyboard help as quiet ghost buttons on the right. Colors come from Noctalia's palette,
-which it derives from the wallpaper.
+The panel is photo-first: the image sits in a bordered frame and clicking it
+samples a random photo. The caption shows the capture date and photo id, four
+palette swatches (primary, secondary, tertiary, surface) so the photo-to-palette
+relationship is visible, and the favorite heart. The action strip has Previous,
+Next, and Random as ghost buttons on the left, with a `cursor/length` history
+position beside Next (its tooltip says "sample" when Next would leave history),
+and Edit, Copy, and keyboard help as quiet ghost buttons on the right. Colors
+come from Noctalia's palette, which it derives from the wallpaper.
 
 Noctalia hot-reloads the `.luau` files. A change to `plugin.toml` (for example the
 panel size) needs `noctalia msg plugins disable khughitt/wali-panel` followed by
 `enable`.
 
 The panel holds no state and derives nothing from paths. Navigation and Favorite
-run a `walictl` command and then re-read `walictl current --json`. Refresh reads
-the metadata directly, Copy copies the source path when present (otherwise the
+run a `walictl` command and then re-read `walictl current --json`; opening the
+panel re-reads it too. Copy copies the source path when present (otherwise the
 current path), and Edit runs without a metadata refresh.

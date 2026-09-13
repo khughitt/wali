@@ -47,10 +47,11 @@ walictl observe             # hook entry point
 walictl import-favorites <favorites.txt>
 ```
 
-`Super+N` toggles the Wali Panel. Inside it, `h/l` or Left/Right walks history;
-`k/j` or Up/Down selects the earlier/later photo by capture time. `f` toggles
-favorite, `e` edits, `y` copies the source path (display path if no source exists),
-`r` samples, `?` or `F1` toggles help, and Escape closes the panel.
+`Super+N` toggles the Wali Panel. Inside it, `h/l` or Left/Right walks history
+(the label beside Next shows the position, `cursor/length`); `k/j` or Up/Down
+selects the earlier/later photo by capture time. `f` toggles favorite, `e` edits,
+`y` copies the source path (display path if no source exists), `r` or a click on
+the photo samples, `?` or `F1` toggles help, and Escape closes the panel.
 
 Without opening the panel, `Super+Alt+Left/Right` runs previous/next,
 `Super+Alt+R` samples, and `Super+Alt+F` toggles favorite. Each reports the photo

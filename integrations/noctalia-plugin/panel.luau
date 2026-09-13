@@ -120,6 +120,7 @@ local function frame()
     return ui.image({
       path = state.current.path, height = frameHeight, radius = 14, fit = "contain",
       border = "outline/0.5", borderWidth = 1,
+      onClick = function() startAction("random") end,
     })
   end
   return ui.column({
@@ -127,6 +128,16 @@ local function frame()
     border = "outline/0.5", borderWidth = 1, align = "center", justify = "center",
   }, {
     ui.glyph({ name = state.loading and "loader" or "wallpaper", size = 48, color = "on_surface_variant/0.6" }),
+  })
+end
+
+local function swatch(role)
+  return ui.box({ width = 10, height = 10, radius = 5, fill = role, border = "outline/0.5", borderWidth = 1 })
+end
+
+local function swatches()
+  return ui.row({ align = "center", gap = 4 }, {
+    swatch("primary"), swatch("secondary"), swatch("tertiary"), swatch("surface"),
   })
 end
 
@@ -142,6 +153,7 @@ local function caption(current, enabled)
       }),
       ui.label({ text = detail.text, fontSize = 12, fontFamily = "monospace", color = detail.color, maxLines = 2 }),
     }),
+    swatches(),
     ui.button({ key = "favorite", glyph = Logic.favoriteGlyph(favorite), glyphSize = 22,
       selected = favorite == true, variant = "ghost", controlSize = "md",
       tooltip = favorite and "Remove favorite (f)" or "Favorite (f)",
@@ -149,8 +161,8 @@ local function caption(current, enabled)
   })
 end
 
-local function navButton(key, glyph, tooltip, enabled, variant)
-  return ui.button({ key = key, glyph = glyph, glyphSize = 20, variant = variant or "outline", controlSize = "md",
+local function navButton(key, glyph, tooltip, enabled)
+  return ui.button({ key = key, glyph = glyph, glyphSize = 20, variant = "ghost", controlSize = "md",
     width = 56, tooltip = tooltip, enabled = enabled, onClick = function() startAction(key) end })
 end
 
@@ -163,10 +175,11 @@ local function actions(current, enabled)
   local loaded = enabled and current ~= nil
   return ui.row({ align = "center", gap = 8 }, {
     navButton("previous", "arrow-left", "Previous (h / ←)", enabled),
-    navButton("next", "arrow-right", "Next (l / →)", enabled),
-    navButton("random", "dice", "Random (r)", enabled, "primary"),
+    navButton("next", "arrow-right", Logic.nextTooltip(current), enabled),
+    ui.label({ text = Logic.historyLabel(current), fontSize = 11, fontFamily = "monospace",
+      color = "on_surface_variant" }),
+    navButton("random", "dice", "Random (r) · or click the photo", enabled),
     ui.spacer({ flexGrow = 1 }),
-    utilityButton("refresh", "refresh", "Refresh", enabled, function() refresh() end),
     utilityButton("edit", "photo-edit", "Edit in GIMP (e)", loaded, function() startAction("edit") end),
     utilityButton("copy", "clipboard", "Copy source path (y)", current ~= nil, copyPath),
     utilityButton("help", "keyboard", "Keyboard shortcuts (? / F1)", true, toggleHelp),

@@ -181,7 +181,7 @@ local function find(node, nodeType)
 end
 
 onOpen({})
-assert(find(rendered, "box") == nil, "ui.box cannot hold children; the placeholder frame must be a container")
+assert(rendered.children[1].type ~= "box", "ui.box cannot hold children; the placeholder frame must be a container")
 local placeholderGlyph = assert(find(rendered, "glyph"), "placeholder frame lost its glyph")
 equal(placeholderGlyph.props.name, "loader")
 equal(#runs, 1)
@@ -221,11 +221,46 @@ equal(favorite.props.glyph, "heart-filled")
 equal(favorite.props.selected, true)
 assert(favorite.props.color == nil, "ui.button has no color prop; the host ignores it")
 assert(favorite.props.text == nil, "favorite must be glyph-only")
-for _, key in ipairs({ "refresh", "previous", "next", "random", "edit", "copy" }) do
+for _, key in ipairs({ "previous", "next", "random", "edit", "copy" }) do
   local node = assert(button(rendered, key), key .. " button missing")
   assert(node.props.text == nil, key .. " must be glyph-only")
   assert(type(node.props.tooltip) == "string" and node.props.tooltip ~= "", key .. " needs a tooltip")
 end
+assert(button(rendered, "refresh") == nil, "Refresh button must be gone")
+for _, key in ipairs({ "previous", "next", "random" }) do
+  equal(assert(button(rendered, key)).props.variant, "ghost")
+end
+
+local function labels(node, found)
+  found = found or {}
+  if node.type == "label" then found[#found + 1] = node.props.text end
+  for _, child in ipairs(node.children) do labels(child, found) end
+  return found
+end
+local function boxes(node, found)
+  found = found or {}
+  if node.type == "box" then found[#found + 1] = node.props.fill end
+  for _, child in ipairs(node.children) do boxes(child, found) end
+  return found
+end
+local seen = {}
+for _, text in ipairs(labels(rendered)) do seen[text] = true end
+assert(seen["4/4"], "history position label missing")
+equal(assert(button(rendered, "next")).props.tooltip, "Next: sample (l / →)")
+equal(boxes(rendered), { "primary", "secondary", "tertiary", "surface" })
+
+local photo = assert(find(rendered, "image"))
+assert(type(photo.props.onClick) == "function", "photo click must sample")
+local before = #runs
+photo.props.onClick()
+equal(#runs, before + 1)
+equal(runs[#runs].command, Shell.command(commands.random))
+assert(find(rendered, "image").props.onClick ~= nil)
+find(rendered, "image").props.onClick()
+equal(#runs, before + 1, "photo click bypassed the busy guard")
+runs[#runs].callback(success())
+runs[#runs].callback(success("with source"))
+
 favorite.props.onClick()
 equal(runs[#runs].command, Shell.command(commands.favorite))
 runs[#runs].callback(success("favorited PXL_20260820_000000000"))
