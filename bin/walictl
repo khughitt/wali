@@ -643,7 +643,11 @@ def cmd_import_favorites(ctx: Context, args: argparse.Namespace) -> int:
     with locked(favorites_lock()):
         if ctx.config.favorites_file.exists() and not args.force:
             raise WalictlError(f"favorites file already exists (use --force): {ctx.config.favorites_file}")
-        store = Ratings(favorites={}, hidden={})
+        existing = Ratings.load(ctx.config.favorites_file)
+        conflicts = [photo for photo in unique_ids if photo in existing.hidden]
+        if conflicts:
+            raise WalictlError(f"hidden photos in import (unhide first): {', '.join(conflicts)}")
+        store = Ratings(favorites={}, hidden=existing.hidden)
         for photo in unique_ids:
             store.add_favorite(photo, now)
         store.save(ctx.config.favorites_file)

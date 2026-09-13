@@ -1062,6 +1062,26 @@ def test_import_favorites_refuses_a_store_created_while_waiting_for_the_lock(
     assert walictl.Ratings.load(env["favorites"]).favorite_ids() == ["other"]
 
 
+def test_import_favorites_force_preserves_hidden_and_refuses_conflicts(
+    walictl: ModuleType, env: dict[str, Path], tmp_path: Path
+) -> None:
+    store = walictl.Ratings(favorites={}, hidden={})
+    store.add_favorite("old", "T")
+    store.add_hidden("PXL_20210609_120000000", "T")
+    store.add_hidden("zzz", "T")
+    store.save(env["favorites"])
+    source = tmp_path / "favorites.txt"
+    source.write_text("x.jpg\nPXL_20210609_120000000.jpg\nzzz.jpg\n")
+    code, _, stderr = run_cli(walictl, ["import-favorites", "--force", str(source)])
+    assert (code, stderr) == (1, "hidden photos in import (unhide first): PXL_20210609_120000000, zzz\n")
+    unchanged = walictl.Ratings.load(env["favorites"])
+    assert unchanged.favorite_ids() == ["old"] and unchanged.hidden_ids() == ["PXL_20210609_120000000", "zzz"]
+    source.write_text("x.jpg\n")
+    assert run_cli(walictl, ["import-favorites", "--force", str(source)])[0] == 0
+    rebuilt = walictl.Ratings.load(env["favorites"])
+    assert rebuilt.favorite_ids() == ["x"] and rebuilt.hidden_ids() == ["PXL_20210609_120000000", "zzz"]
+
+
 def test_import_favorites_fails_on_missing_source(walictl: ModuleType, env: dict[str, Path], tmp_path: Path) -> None:
     code, _, stderr = run_cli(walictl, ["import-favorites", str(tmp_path / "nope.txt")])
     assert (code, stderr) == (1, f"favorites source not found: {tmp_path / 'nope.txt'}\n")
