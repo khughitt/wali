@@ -6,8 +6,8 @@ priority: 2
 size: s
 complexity: low
 created: 2026-09-13T17:59:09Z
-updated: 2026-09-13T17:59:09Z
-depends: []
+updated: 2026-09-13T17:59:27Z
+depends: [wali-eea384]
 parent: wali-608311
 tags: [wallpaper]
 plan: docs/plans/2026-09-13-quick-edit.md
