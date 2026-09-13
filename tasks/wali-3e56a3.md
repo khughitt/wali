@@ -1,12 +1,13 @@
 ---
 id: wali-3e56a3
 title: "Wali panel polish pass 2: borderless buttons, subtle color, drop Refresh"
-status: todo
+status: done
 priority: 2
 size: s
 complexity: mid
 created: 2026-09-12T09:35:40Z
-updated: 2026-09-13T19:37:28Z
+updated: 2026-09-13T19:37:59Z
+completed: 2026-09-13T19:37:59Z
 depends: []
 tags: [quick-add, noctalia, wallpaper]
 source: dots-9bfdc0
@@ -30,3 +31,4 @@ Second design pass on noctalia/plugins/wali-panel after pass 1 (dots-ba0168). Tr
 - 2026-09-13T16:50:03Z (panel-scope): Scoped 2026-09-13 (bounded, in-chat design): the photo context menu is infeasible — Noctalia opens context menus only from ui.button onRightClick, never from ui.image or containers. Keep Edit/Copy as ghost buttons. Remaining items: ghost nav buttons, click photo for Random, drop Refresh, history position label, palette swatches.
 - 2026-09-13T17:30:47Z (panel-scope): Plan constraints from review: keep the utilityButton helper (remove only Refresh's call), add history {cursor,length} validation to validateCurrent next to historyLabel/nextTooltip, route the photo onClick through startAction's busy guard.
 - 2026-09-13T19:37:28Z (panel-scope): Review 2026-09-13: UI approved; surface swatch dropped (it is the panel background, always the same dark neutral) — three swatches remain.
+- 2026-09-13T19:37:59Z (panel-scope): pass 2 landed on panel-scope: ghost nav, photo-click sampling, Refresh removed, history position label, three palette swatches; photo context menu dropped (Noctalia only opens menus from ui.button onRightClick); reviewed on the rendered panel
