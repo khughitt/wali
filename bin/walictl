@@ -497,6 +497,103 @@ class EditsStore:
         return self.edits.pop(photo_id, None) is not None
 
 
+# --- rendering --------------------------------------------------------------
+
+PREVIEW_WIDTH = 560
+BLOOM_RADIUS = 25.0
+
+
+def _num(value: float) -> str:
+    """Compact decimal for magick: 3 → '3', 1.628 → '1.628'."""
+    text = f"{value:.4g}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def output_required(recipe: dict[str, int | str], output: tuple[int, int] | None) -> None:
+    if recipe.get("anchor", "center") != "center" and output is None:
+        raise WalictlError("config key edits.output is required for anchor")
+
+
+def image_size(path: Path) -> tuple[int, int]:
+    result = _magick(["identify", "-format", "%w %h", str(path)])
+    try:
+        width, height = (int(part) for part in result.stdout.split())
+    except ValueError as exc:
+        raise WalictlError(f"magick identify returned no size for {path}: {result.stdout.strip()!r}") from exc
+    return width, height
+
+
+def crop_box(width: int, height: int, output: tuple[int, int], anchor: str) -> tuple[int, int, int, int]:
+    """The largest output-aspect box inside width×height, placed at the anchor."""
+    out_w, out_h = output
+    if width * out_h >= height * out_w:
+        crop_w, crop_h = height * out_w // out_h, height
+    else:
+        crop_w, crop_h = width, width * out_h // out_w
+    x = {"left": 0, "right": width - crop_w}.get(anchor, (width - crop_w) // 2)
+    y = {"top": 0, "bottom": height - crop_h}.get(anchor, (height - crop_h) // 2)
+    return crop_w, crop_h, x, y
+
+
+def magick_argv(
+    source: Path, recipe: dict[str, int | str], output: tuple[int, int] | None, dest: Path, preview_width: int | None
+) -> list[str]:
+    """One magick invocation: rotate → (resize) → tone → blur → noise → bloom → crop."""
+    values = effective(recipe)
+    rotate, anchor = int(values["rotate"]), str(values["anchor"])
+    argv = ["magick", str(source)]
+    width, height = (0, 0)
+    if preview_width is not None or anchor != "center":
+        width, height = image_size(source)
+        if rotate in (90, 270):
+            width, height = height, width
+    if rotate:
+        argv += ["-rotate", str(rotate)]
+    scale = 1.0
+    if preview_width is not None:
+        scale = preview_width / width
+        argv += ["-resize", f"{preview_width}x"]
+        width, height = preview_width, round(height * scale)
+    brightness, contrast = int(values["brightness"]), int(values["contrast"])
+    if brightness or contrast:
+        argv += ["-brightness-contrast", f"{brightness}x{contrast}"]
+    saturation, hue = int(values["saturation"]), int(values["hue"])
+    if saturation != 100 or hue:
+        argv += ["-modulate", f"100,{saturation},{_num(100 + hue / 1.8)}"]
+    if values["blur"]:
+        argv += ["-blur", f"0x{_num(int(values['blur']) * scale)}"]
+    if values["noise"]:
+        argv += ["-attenuate", _num(int(values["noise"]) / 100 * scale), "+noise", "Gaussian"]
+    if values["bloom"]:
+        argv += [
+            "(", "+clone", "-blur", f"0x{_num(BLOOM_RADIUS * scale)}",
+            "-evaluate", "multiply", _num(int(values["bloom"]) / 100), ")",
+            "-compose", "screen", "-composite",
+        ]
+    crop = output is not None and (anchor != "center" or preview_width is not None)
+    if crop:
+        assert output is not None
+        crop_w, crop_h, x, y = crop_box(width, height, output, anchor)
+        argv += ["-crop", f"{crop_w}x{crop_h}+{x}+{y}", "+repage"]
+    return argv + ["-quality", "92", str(dest)]
+
+
+def _magick(args: list[str]) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(["magick", *args], check=False, capture_output=True, text=True)
+    except FileNotFoundError as exc:
+        raise WalictlError("magick command not found") from exc
+    if result.returncode != 0:
+        raise WalictlError(f"magick failed: {' '.join(result.stderr.split()) or result.returncode}")
+    return result
+
+
+def render(
+    source: Path, recipe: dict[str, int | str], output: tuple[int, int] | None, dest: Path, preview_width: int | None = None
+) -> None:
+    _magick(magick_argv(source, recipe, output, dest, preview_width)[1:])
+
+
 # --- history ----------------------------------------------------------------
 
 HISTORY_VERSION = 1

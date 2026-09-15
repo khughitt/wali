@@ -5,6 +5,7 @@ import importlib.machinery
 import importlib.util
 import io
 import json
+import os
 import re
 import subprocess
 import sys
@@ -60,10 +61,12 @@ class FakeNoctalia:
     def __init__(self, default: Path | None, *, reject_set: str | None = None) -> None:
         self.default, self.reject_set = default, reject_set
         self.calls: list[list[str]] = []
+        self.real_run = subprocess.run
 
     def run(self, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if list(args[:2]) != ["noctalia", "msg"]:
+            return self.real_run(args, **kwargs)
         self.calls.append(list(args))
-        assert args[:2] == ["noctalia", "msg"], args
         if args[2] == "wallpaper-get":
             return subprocess.CompletedProcess(args, 0, stdout=f"{self.default}\n" if self.default else "\n", stderr="")
         if args[2] == "wallpaper-set":
@@ -79,6 +82,42 @@ def noctalia(env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> FakeNocta
     fake = FakeNoctalia(env["wallpapers"] / "PXL_20210608_111152739.jpg")
     monkeypatch.setattr(subprocess, "run", fake.run)
     return fake
+
+
+@pytest.fixture
+def fake_magick(env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> Path:
+    bin_dir = env["cache_home"].parent / "bin"
+    bin_dir.mkdir()
+    log = bin_dir / "magick.log"
+    script = bin_dir / "magick"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, shutil, sys\n"
+        "args = sys.argv[1:]\n"
+        "if args and args[0] == 'identify':\n"
+        "    sys.stdout.write(os.environ.get('FAKE_MAGICK_SIZE', '3440 1935'))\n"
+        "    sys.exit(0)\n"
+        f"with open({str(log)!r}, 'a') as handle:\n"
+        "    handle.write(json.dumps(args) + '\\n')\n"
+        "if os.environ.get('FAKE_MAGICK_FAIL'):\n"
+        "    sys.stderr.write('boom\\n')\n"
+        "    sys.exit(1)\n"
+        "if os.environ.get('FAKE_MAGICK_PARTIAL'):\n"
+        "    open(args[-1], 'wb').write(b'x')\n"
+        "    sys.stderr.write('died\\n')\n"
+        "    sys.exit(1)\n"
+        "shutil.copyfile(args[0], args[-1])\n"
+    )
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    monkeypatch.delenv("FAKE_MAGICK_FAIL", raising=False)
+    monkeypatch.delenv("FAKE_MAGICK_PARTIAL", raising=False)
+    monkeypatch.delenv("FAKE_MAGICK_SIZE", raising=False)
+    return log
+
+
+def magick_calls(log: Path) -> list[list[str]]:
+    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
 
 def run_cli(walictl: ModuleType, argv: list[str]) -> tuple[int, str, str]:
@@ -391,6 +430,89 @@ def test_edits_store_round_trip_and_validation(walictl: ModuleType, tmp_path: Pa
 def test_edit_locks_live_in_state_dir(walictl: ModuleType, env: dict[str, Path]) -> None:
     assert walictl.edits_lock() == env["state_home"] / "wali" / "edits.lock"
     assert walictl.variants_lock() == env["state_home"] / "wali" / "variants.lock"
+
+
+@pytest.mark.parametrize(
+    ("size", "anchor", "expected"),
+    [
+        ((3440, 1935), "center", (3440, 1440, 0, 247)),
+        ((3440, 1935), "top", (3440, 1440, 0, 0)),
+        ((3440, 1935), "bottom", (3440, 1440, 0, 495)),
+        ((1935, 3440), "center", (1935, 810, 0, 1315)),
+        ((1935, 3440), "left", (1935, 810, 0, 1315)),
+        ((4000, 1000), "left", (2388, 1000, 0, 0)),
+        ((4000, 1000), "right", (2388, 1000, 1612, 0)),
+        ((4000, 1000), "center", (2388, 1000, 806, 0)),
+    ],
+)
+def test_crop_box_fits_output_aspect_from_anchor(
+    walictl: ModuleType, size: tuple[int, int], anchor: str, expected: tuple[int, int, int, int]
+) -> None:
+    assert walictl.crop_box(size[0], size[1], (3440, 1440), anchor) == expected
+
+
+def test_magick_argv_per_key(walictl: ModuleType, env: dict[str, Path], fake_magick: Path) -> None:
+    src, dst = Path("/s.jpg"), Path("/d.jpg")
+    base = ["magick", "/s.jpg"]
+    tail = ["-quality", "92", "/d.jpg"]
+    argv = walictl.magick_argv
+    assert argv(src, {}, None, dst, None) == base + tail
+    assert argv(src, {"rotate": 90}, None, dst, None) == base + ["-rotate", "90"] + tail
+    assert argv(src, {"brightness": 10, "contrast": -5}, None, dst, None) == base + ["-brightness-contrast", "10x-5"] + tail
+    assert argv(src, {"saturation": 80}, None, dst, None) == base + ["-modulate", "100,80,100"] + tail
+    assert argv(src, {"hue": 90}, None, dst, None) == base + ["-modulate", "100,100,150"] + tail
+    assert argv(src, {"blur": 3}, None, dst, None) == base + ["-blur", "0x3"] + tail
+    assert argv(src, {"noise": 40}, None, dst, None) == base + ["-attenuate", "0.4", "+noise", "Gaussian"] + tail
+    assert argv(src, {"bloom": 50}, None, dst, None) == base + [
+        "(", "+clone", "-blur", "0x25", "-evaluate", "multiply", "0.5", ")", "-compose", "screen", "-composite",
+    ] + tail
+    assert argv(src, {"brightness": 1}, (3440, 1440), dst, None) == base + ["-brightness-contrast", "1x0"] + tail
+    assert argv(src, {"anchor": "top"}, (3440, 1440), dst, None) == base + ["-crop", "3440x1440+0+0", "+repage"] + tail
+    assert argv(src, {"rotate": 90, "anchor": "top"}, (3440, 1440), dst, None) == base + [
+        "-rotate", "90", "-crop", "1935x810+0+0", "+repage",
+    ] + tail
+    assert argv(src, {"rotate": 180, "blur": 2, "bloom": 10, "noise": 10, "saturation": 50, "anchor": "bottom"}, (3440, 1440), dst, None) == base + [
+        "-rotate", "180", "-modulate", "100,50,100", "-blur", "0x2", "-attenuate", "0.1", "+noise", "Gaussian",
+        "(", "+clone", "-blur", "0x25", "-evaluate", "multiply", "0.1", ")", "-compose", "screen", "-composite",
+        "-crop", "3440x1440+0+495", "+repage",
+    ] + tail
+
+
+def test_magick_argv_preview_scales_pixel_units_and_crops(walictl: ModuleType, env: dict[str, Path], fake_magick: Path) -> None:
+    src, dst = Path("/s.jpg"), Path("/p.jpg")
+    argv = walictl.magick_argv
+    got = argv(src, {"blur": 10, "noise": 50, "bloom": 20}, None, dst, 560)
+    assert got[:4] == ["magick", "/s.jpg", "-resize", "560x"]
+    assert got[4:6] == ["-blur", "0x1.628"]
+    assert got[6:10] == ["-attenuate", "0.0814", "+noise", "Gaussian"]
+    assert got[10:21] == ["(", "+clone", "-blur", "0x4.07", "-evaluate", "multiply", "0.2", ")", "-compose", "screen", "-composite"]
+    assert got[21:] == ["-quality", "92", "/p.jpg"]
+    assert argv(src, {}, (3440, 1440), dst, 560) == ["magick", "/s.jpg", "-resize", "560x", "-crop", "560x234+0+40", "+repage", "-quality", "92", "/p.jpg"]
+    got = argv(src, {"rotate": 90, "blur": 10, "anchor": "top"}, (3440, 1440), dst, 560)
+    assert got == ["magick", "/s.jpg", "-rotate", "90", "-resize", "560x", "-blur", "0x2.894", "-crop", "560x234+0+0", "+repage", "-quality", "92", "/p.jpg"]
+
+
+def test_render_runs_magick_and_reports_failures(walictl: ModuleType, env: dict[str, Path], fake_magick: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = env["wallpapers"] / "PXL_20210608_111152739.jpg"
+    source.write_bytes(b"jpeg")
+    dest = env["cache_home"] / "out.jpg"
+    dest.parent.mkdir(parents=True)
+    walictl.render(source, {"rotate": 90}, None, dest)
+    assert dest.read_bytes() == b"jpeg"
+    assert magick_calls(fake_magick) == [[str(source), "-rotate", "90", "-quality", "92", str(dest)]]
+    monkeypatch.setenv("FAKE_MAGICK_FAIL", "1")
+    with pytest.raises(walictl.WalictlError, match="magick failed: boom"):
+        walictl.render(source, {"rotate": 90}, None, dest)
+    monkeypatch.setenv("PATH", str(env["cache_home"]))
+    with pytest.raises(walictl.WalictlError, match="magick command not found"):
+        walictl.render(source, {"rotate": 90}, None, dest)
+
+
+def test_output_required_for_anchor(walictl: ModuleType) -> None:
+    walictl.output_required({"anchor": "top"}, (1, 1))
+    walictl.output_required({"brightness": 1}, None)
+    with pytest.raises(walictl.WalictlError, match="config key edits.output is required for anchor"):
+        walictl.output_required({"anchor": "top"}, None)
 
 
 @pytest.mark.parametrize("version", [True, 1.0])
