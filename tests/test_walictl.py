@@ -5,6 +5,7 @@ import importlib.machinery
 import importlib.util
 import io
 import json
+import re
 import subprocess
 import sys
 from contextlib import redirect_stderr, redirect_stdout
@@ -36,7 +37,7 @@ def walictl() -> ModuleType:
 @pytest.fixture
 def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
     tmp_path = tmp_path.resolve()
-    config_home, state_home = tmp_path / "config", tmp_path / "state"
+    config_home, state_home, cache_home = tmp_path / "config", tmp_path / "state", tmp_path / "cache"
     wallpapers, archive, favorites = tmp_path / "3440", tmp_path / "archive", tmp_path / "favorites.json"
     wallpapers.mkdir()
     for stem in ("PXL_20210608_111152739", "PXL_20210609_120000000", "PXL_20220402_162957459"):
@@ -51,7 +52,8 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
     )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
     monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
-    return {"config_home": config_home, "state_home": state_home, "wallpapers": wallpapers, "archive": archive, "favorites": favorites}
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_home))
+    return {"config_home": config_home, "state_home": state_home, "cache_home": cache_home, "wallpapers": wallpapers, "archive": archive, "favorites": favorites}
 
 
 class FakeNoctalia:
@@ -94,7 +96,7 @@ def test_load_config_reads_required_and_optional_keys(walictl: ModuleType, env: 
     assert config.wallpaper_dir == env["wallpapers"]
     assert config.favorites_file == env["favorites"]
     assert config.archive_root == env["archive"]
-    assert config.variants_dir is None
+    assert config.edits is None
     assert config.sampling == walictl.Sampling(exclude_recent=200, favorite_boost=1.0, period_boost=3.0)
 
 
@@ -102,11 +104,47 @@ def test_load_config_expands_tilde_and_reads_sampling(walictl: ModuleType, tmp_p
     tmp_path = tmp_path.resolve()
     monkeypatch.setenv("HOME", str(tmp_path))
     path = tmp_path / "config.toml"
-    path.write_text('wallpaper_dir = "~/w"\nfavorites_file = "~/f.json"\nvariants_dir = "~/v"\n[sampling]\nexclude_recent = 5\nfavorite_boost = 0.5\nperiod_boost = 0\n')
+    path.write_text('wallpaper_dir = "~/w"\nfavorites_file = "~/f.json"\n[sampling]\nexclude_recent = 5\nfavorite_boost = 0.5\nperiod_boost = 0\n')
     config = walictl.load_config(path)
     assert config.wallpaper_dir == tmp_path / "w"
-    assert config.variants_dir == tmp_path / "v"
+    assert config.edits is None
     assert config.sampling == walictl.Sampling(exclude_recent=5, favorite_boost=0.5, period_boost=0.0)
+
+
+def enable_edits(env: dict[str, Path], output: str | None = "3440x1440") -> Path:
+    edits = env["wallpapers"].parent / "edits.json"
+    config = env["config_home"] / "wali" / "config.toml"
+    text = config.read_text() + f'edits_file = "{edits}"\n'
+    if output is not None:
+        text += f'[edits]\noutput = "{output}"\n'
+    config.write_text(text)
+    return edits
+
+
+def test_load_config_reads_edits(walictl: ModuleType, env: dict[str, Path]) -> None:
+    edits = enable_edits(env)
+    config = walictl.load_config(walictl.config_path())
+    assert config.edits == walictl.EditsConfig(file=edits, output=(3440, 1440))
+    path = env["config_home"] / "wali" / "config.toml"
+    path.write_text(f'wallpaper_dir = "{env["wallpapers"]}"\nfavorites_file = "{env["favorites"]}"\nedits_file = "{edits}"\n')
+    assert walictl.load_config(path).edits == walictl.EditsConfig(file=edits, output=None)
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ('[edits]\noutput = "3440x1440"\n', "config key edits_file is required for [edits]"),
+        ('edits_file = "~/e.json"\n[edits]\noutput = "wide"\n', "config key edits.output must be WIDTHxHEIGHT"),
+        ('edits_file = "~/e.json"\n[edits]\noutput = "0x10"\n', "config key edits.output must be WIDTHxHEIGHT"),
+        ('edits_file = "~/e.json"\n[edits]\noutput = 5\n', "config key edits.output must be WIDTHxHEIGHT"),
+        ('edits_file = ""\n', "config key edits_file must be a non-empty string"),
+    ],
+)
+def test_invalid_edits_config(walictl: ModuleType, env: dict[str, Path], extra: str, message: str) -> None:
+    path = env["config_home"] / "wali" / "config.toml"
+    path.write_text(path.read_text() + extra)
+    with pytest.raises(walictl.WalictlError, match=re.escape(message)):
+        walictl.load_config(path)
 
 
 def test_load_config_resolves_symlinked_directories(walictl: ModuleType, tmp_path: Path) -> None:
@@ -189,24 +227,28 @@ def test_scan_library_fails_on_missing_directory(walictl: ModuleType, tmp_path: 
         walictl.scan_library(tmp_path / "nope")
 
 
-def test_find_by_stem_matches_literal_bracketed_stem(walictl: ModuleType, tmp_path: Path) -> None:
-    literal = tmp_path / "photo[1].png"
-    literal.touch()
-    (tmp_path / "photo1.jpg").touch()
-    assert walictl.find_by_stem(tmp_path, "photo[1]") == literal
+def test_cache_paths_and_photo_id_validation(walictl: ModuleType, env: dict[str, Path]) -> None:
+    photo = "PXL_20210608_111152739"
+    assert walictl.variant_dir(photo) == env["cache_home"] / "wali" / "variants" / photo
+    assert walictl.variant_file(photo, "abcdef0123456789ffff") == walictl.variant_dir(photo) / "abcdef0123456789" / f"{photo}.jpg"
+    assert walictl.preview_dir(photo) == env["cache_home"] / "wali" / "preview" / photo
+    assert walictl.check_photo_id("a.b", "id") == "a.b"
+    for bad in ("", ".", "..", "a/b", "../victim", "a\x00b", 5, None):
+        with pytest.raises(walictl.WalictlError, match="id must be a single file name stem"):
+            walictl.check_photo_id(bad, "id")
+    for helper in (walictl.variant_dir, walictl.preview_dir):
+        with pytest.raises(walictl.WalictlError, match="photo id must be a single file name stem"):
+            helper("../victim")
 
 
-def test_resolve_variant_and_source(walictl: ModuleType, env: dict[str, Path], tmp_path: Path) -> None:
+def test_cli_rejects_path_like_ids(walictl: ModuleType, env: dict[str, Path]) -> None:
+    code, _, stderr = run_cli(walictl, ["favorite", "--add", "../victim"])
+    assert code == 2 and "single file name stem" in stderr
+
+
+def test_resolve_variant_and_source(walictl: ModuleType, env: dict[str, Path]) -> None:
     config = walictl.load_config(walictl.config_path())
     assert walictl.resolve_variant(config, "PXL_20210608_111152739") is None
-    variants = tmp_path / "edits"
-    variants.mkdir()
-    (variants / "PXL_20210608_111152739.png").touch()
-    (variants / "PXL_20210608_111152739.jpg").touch()
-    with_variants = walictl.Config(
-        config.wallpaper_dir, config.favorites_file, config.archive_root, variants, config.sampling
-    )
-    assert walictl.resolve_variant(with_variants, "PXL_20210608_111152739") == variants / "PXL_20210608_111152739.jpg"
     assert walictl.resolve_source(config, "PXL_20210608_111152739") == env["archive"] / "2021" / "06" / "PXL_20210608_111152739.jpg"
     assert walictl.resolve_source(config, "PXL_20210609_120000000") is None
     assert walictl.resolve_source(config, "IMG_1") is None
@@ -214,19 +256,10 @@ def test_resolve_variant_and_source(walictl: ModuleType, env: dict[str, Path], t
     assert walictl.resolve_source(no_archive, "PXL_20210608_111152739") is None
 
 
-def test_display_path_prefers_variant_and_rejects_unknown_id(
-    walictl: ModuleType, env: dict[str, Path], tmp_path: Path
-) -> None:
+def test_display_path_rejects_unknown_id(walictl: ModuleType, env: dict[str, Path]) -> None:
     config = walictl.load_config(walictl.config_path())
     library = walictl.scan_library(config.wallpaper_dir)
     assert walictl.display_path(config, library, "PXL_20210609_120000000") == env["wallpapers"] / "PXL_20210609_120000000.jpg"
-    variants = tmp_path / "edits"
-    variants.mkdir()
-    (variants / "PXL_20210609_120000000.webp").touch()
-    with_variants = walictl.Config(
-        config.wallpaper_dir, config.favorites_file, config.archive_root, variants, config.sampling
-    )
-    assert walictl.display_path(with_variants, library, "PXL_20210609_120000000") == variants / "PXL_20210609_120000000.webp"
     with pytest.raises(walictl.WalictlError, match="unknown photo id: nope"):
         walictl.display_path(config, library, "nope")
 
@@ -379,6 +412,7 @@ def test_history_corrupt_file_is_an_error(walictl: ModuleType, tmp_path: Path) -
         ({"version": 1.0, "cursor": -1, "entries": []}, "unsupported history version"),
         ({"version": 1, "cursor": True, "entries": []}, "history file is malformed"),
         ({"version": 1, "cursor": -1, "entries": {}}, "history file is malformed"),
+        ({"version": 1, "cursor": 0, "entries": [{"ts": "T", "id": "../victim", "path": "/p", "origin": "next"}]}, "history entry id in"),
     ],
 )
 def test_history_rejects_malformed_state(
@@ -830,36 +864,6 @@ def test_file_symlink_observe_and_previous_preserve_history(
     assert noctalia.default == env["wallpapers"] / "PXL_20210608_111152739.jpg"
 
 
-def test_replay_prefers_a_variant_created_later(
-    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, tmp_path: Path
-) -> None:
-    variants = tmp_path / "edits"
-    variants.mkdir()
-    config = env["config_home"] / "wali" / "config.toml"
-    config.write_text(config.read_text() + f'variants_dir = "{variants}"\n')
-    run_cli(walictl, ["random", "--seed", "3"])
-    variant = variants / "PXL_20210608_111152739.png"
-    variant.touch()
-    code, stdout, _ = run_cli(walictl, ["previous"])
-    assert (code, stdout) == (0, "previous: PXL_20210608_111152739\n")
-    assert noctalia.default == variant.resolve()
-    assert load_history(walictl).entries[0].path == str(variant.resolve())
-
-
-def test_sampling_prefers_variant_file(
-    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, tmp_path: Path
-) -> None:
-    variants = tmp_path / "edits"
-    variants.mkdir()
-    for stem in ("PXL_20210609_120000000", "PXL_20220402_162957459"):
-        (variants / f"{stem}.png").touch()
-    config = env["config_home"] / "wali" / "config.toml"
-    config.write_text(config.read_text() + f'variants_dir = "{variants}"\n')
-    run_cli(walictl, ["random", "--seed", "3"])
-    picked = load_history(walictl).entries[1]
-    assert Path(picked.path).parent == variants
-
-
 def test_favorite_toggles_current_and_explicit_ids(
     walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia
 ) -> None:
@@ -992,18 +996,13 @@ def test_favorites_json_lists_paths_and_existence(
     store.add_favorite("PXL_20210919_170859013", "T2")
     store.add_favorite("PXL_20210609_120000000", "T3")
     store.save(env["favorites"])
-    variants = tmp_path / "edits"
-    variants.mkdir()
-    (variants / "PXL_20210609_120000000.png").touch()
-    config = env["config_home"] / "wali" / "config.toml"
-    config.write_text(config.read_text() + f'variants_dir = "{variants}"\n')
     code, stdout, _ = run_cli(walictl, ["favorites", "--json"])
     assert code == 0
     assert json.loads(stdout) == {
         "ok": True,
         "favorites": [
             {"id": "PXL_20210608_111152739", "added": "T1", "date": "2021-06-08", "display_date": "June 8, 2021", "path": str(env["wallpapers"] / "PXL_20210608_111152739.jpg"), "source_path": str(env["archive"] / "2021" / "06" / "PXL_20210608_111152739.jpg"), "exists": True},
-            {"id": "PXL_20210609_120000000", "added": "T3", "date": "2021-06-09", "display_date": "June 9, 2021", "path": str((variants / "PXL_20210609_120000000.png").resolve()), "source_path": None, "exists": True},
+            {"id": "PXL_20210609_120000000", "added": "T3", "date": "2021-06-09", "display_date": "June 9, 2021", "path": str(env["wallpapers"] / "PXL_20210609_120000000.jpg"), "source_path": None, "exists": True},
             {"id": "PXL_20210919_170859013", "added": "T2", "date": "2021-09-19", "display_date": "September 19, 2021", "path": None, "source_path": None, "exists": False},
         ],
     }
@@ -1056,31 +1055,6 @@ def test_capture_navigation_from_a_hidden_current_still_has_neighbours(
     payload = json.loads(run_cli(walictl, ["neighbors", "--json"])[1])
     assert payload["id"] == "PXL_20210609_120000000"
     assert [n["id"] for n in payload["before"]] == ["PXL_20210608_111152739"]
-
-
-def test_capture_navigation_preserves_variants_and_browser_history(
-    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia
-) -> None:
-    variants = env["wallpapers"].parent / "variants"
-    variants.mkdir()
-    target = variants / "PXL_20210609_120000000.png"
-    target.touch()
-    config = env["config_home"] / "wali" / "config.toml"
-    config.write_text(config.read_text() + f'variants_dir = "{variants}"\n')
-    (env["wallpapers"] / "IMG_undated.jpg").touch()
-    assert run_cli(walictl, ["later"]) == (0, "later: PXL_20210609_120000000\n", "")
-    assert noctalia.default == target
-    assert run_cli(walictl, ["later"])[0] == 0
-    assert run_cli(walictl, ["previous"])[0] == 0
-    assert noctalia.default == target
-    assert run_cli(walictl, ["earlier"])[0] == 0
-    history = load_history(walictl)
-    assert [(e.id, e.origin) for e in history.entries] == [
-        ("PXL_20210608_111152739", "observed"),
-        ("PXL_20210609_120000000", "later"),
-        ("PXL_20210608_111152739", "earlier"),
-    ]
-    assert history.cursor == 2
 
 
 @pytest.mark.parametrize("action,photo,error", [

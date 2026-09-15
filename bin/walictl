@@ -35,11 +35,17 @@ class Sampling:
 
 
 @dataclass(frozen=True)
+class EditsConfig:
+    file: Path
+    output: tuple[int, int] | None
+
+
+@dataclass(frozen=True)
 class Config:
     wallpaper_dir: Path
     favorites_file: Path
     archive_root: Path | None
-    variants_dir: Path | None
+    edits: EditsConfig | None
     sampling: Sampling
 
 
@@ -53,6 +59,32 @@ def config_path() -> Path:
 
 def state_dir() -> Path:
     return _xdg("XDG_STATE_HOME", ".local/state") / "wali"
+
+
+def cache_dir() -> Path:
+    return _xdg("XDG_CACHE_HOME", ".cache") / "wali"
+
+
+def variants_dir() -> Path:
+    return cache_dir() / "variants"
+
+
+def previews_dir() -> Path:
+    return cache_dir() / "preview"
+
+
+def variant_dir(photo_id: str) -> Path:
+    # The check lives here, not in the callers: history, recipes, ratings, and
+    # arguments all reach the cache through this helper.
+    return variants_dir() / check_photo_id(photo_id, "photo id")
+
+
+def variant_file(photo_id: str, key: str) -> Path:
+    return variant_dir(photo_id) / key[:16] / f"{photo_id}.jpg"
+
+
+def preview_dir(photo_id: str) -> Path:
+    return previews_dir() / check_photo_id(photo_id, "photo id")
 
 
 def _expand(value: object, key: str) -> Path:
@@ -87,13 +119,34 @@ def load_config(path: Path) -> Config:
         wallpaper_dir=_expand(raw["wallpaper_dir"], "wallpaper_dir"),
         favorites_file=_expand(raw["favorites_file"], "favorites_file"),
         archive_root=_expand(raw["archive_root"], "archive_root") if "archive_root" in raw else None,
-        variants_dir=_expand(raw["variants_dir"], "variants_dir") if "variants_dir" in raw else None,
+        edits=load_edits_config(raw),
         sampling=Sampling(
             exclude_recent=exclude_recent,
             favorite_boost=float(favorite_boost),
             period_boost=float(period_boost),
         ),
     )
+
+
+def parse_output(value: object) -> tuple[int, int]:
+    match = re.fullmatch(r"(\d+)x(\d+)", value) if isinstance(value, str) else None
+    if match is None or int(match[1]) <= 0 or int(match[2]) <= 0:
+        raise WalictlError("config key edits.output must be WIDTHxHEIGHT with positive integers")
+    return int(match[1]), int(match[2])
+
+
+def load_edits_config(raw: dict[str, object]) -> EditsConfig | None:
+    table = raw.get("edits")
+    if "edits_file" not in raw:
+        if table is not None:
+            raise WalictlError("config key edits_file is required for [edits]")
+        return None
+    if table is None:
+        return EditsConfig(file=_expand(raw["edits_file"], "edits_file"), output=None)
+    if not isinstance(table, dict):
+        raise WalictlError("config table [edits] must be a table")
+    output = parse_output(table["output"]) if "output" in table else None
+    return EditsConfig(file=_expand(raw["edits_file"], "edits_file"), output=output)
 
 
 # --- photo identity and library --------------------------------------------
@@ -104,6 +157,26 @@ _PXL_STEM = re.compile(r"PXL_(\d{8})_.+")
 
 def photo_id(path: Path) -> str:
     return path.stem
+
+
+def check_photo_id(value: object, label: str) -> str:
+    """An id that is safe to place in a path: one file-name stem, nothing more."""
+    if (
+        not isinstance(value, str)
+        or value in ("", ".", "..")
+        or "/" in value
+        or "\x00" in value
+        or Path(value).name != value
+    ):
+        raise WalictlError(f"{label} must be a single file name stem: {value!r}")
+    return value
+
+
+def photo_id_arg(value: str) -> str:
+    try:
+        return check_photo_id(value, "photo id")
+    except WalictlError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def capture_date(photo_id: str) -> date | None:
@@ -124,15 +197,6 @@ def _extension_rank(path: Path) -> int:
     return WALLPAPER_EXTENSIONS.index(path.suffix.lower())
 
 
-def find_by_stem(directory: Path, photo_id: str) -> Path | None:
-    candidates = [
-        path
-        for path in directory.iterdir()
-        if path.is_file() and path.stem == photo_id and path.suffix.lower() in WALLPAPER_EXTENSIONS
-    ]
-    return min(candidates, key=_extension_rank) if candidates else None
-
-
 def scan_library(directory: Path) -> dict[str, Path]:
     if not directory.is_dir():
         raise WalictlError(f"wallpaper directory not found: {directory}")
@@ -147,9 +211,7 @@ def scan_library(directory: Path) -> dict[str, Path]:
 
 
 def resolve_variant(config: Config, photo_id: str) -> Path | None:
-    if config.variants_dir is None or not config.variants_dir.is_dir():
-        return None
-    return find_by_stem(config.variants_dir, photo_id)
+    return None  # replaced by current_variant once recipes exist
 
 
 def resolve_source(config: Config, photo_id: str) -> Path | None:
@@ -348,6 +410,7 @@ class History:
                 or raw["origin"] not in ORIGINS
             ):
                 raise WalictlError(f"history file has a malformed entry: {path}")
+            check_photo_id(raw["id"], f"history entry id in {path}")
             entries.append(HistoryEntry(raw["ts"], raw["id"], raw["path"], raw["origin"]))
         if not (-1 <= cursor < len(entries)) or (cursor == -1 and entries):
             raise WalictlError(f"history cursor out of range in {path}: {cursor}")
@@ -793,14 +856,14 @@ def build_parser() -> argparse.ArgumentParser:
     mode = favorite.add_mutually_exclusive_group()
     mode.add_argument("--add", action="store_true")
     mode.add_argument("--remove", action="store_true")
-    favorite.add_argument("photo_id", nargs="?", default=None)
+    favorite.add_argument("photo_id", nargs="?", default=None, type=photo_id_arg)
     favorites = subparsers.add_parser("favorites", help="list favorites")
     favorites.add_argument("--json", action="store_true", required=True)
     hide = subparsers.add_parser("hide", help="hide a photo from sampling; replaces it when it is displayed")
-    hide.add_argument("photo_id", nargs="?", default=None)
+    hide.add_argument("photo_id", nargs="?", default=None, type=photo_id_arg)
     hide.add_argument("--seed", type=int, default=None, help="seed the replacement sampler (tests)")
     unhide = subparsers.add_parser("unhide", help="restore a hidden photo")
-    unhide.add_argument("photo_id")
+    unhide.add_argument("photo_id", type=photo_id_arg)
     hidden = subparsers.add_parser("hidden", help="list hidden photos")
     hidden.add_argument("--json", action="store_true", required=True)
     importer = subparsers.add_parser("import-favorites", help="build favorites.json from the legacy favorites.txt")
