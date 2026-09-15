@@ -23,7 +23,7 @@ In niri, `Super+N` toggles the panel and gives it keyboard focus immediately.
 | `k` / Up | Earlier photo by capture time |
 | `j` / Down | Later photo by capture time |
 | `r` | Random photo (clicking the photo also samples) |
-| `f` | Toggle favorite |
+| `f` / Space | Toggle favorite |
 | `x` | Hide the photo (never sampled again); restore it when it is already hidden |
 | `shift+x` | Toggle the hidden list in the preview area |
 | `e` | Edit in GIMP |
@@ -34,7 +34,9 @@ In niri, `Super+N` toggles the panel and gives it keyboard focus immediately.
 Capture-time navigation uses `walictl earlier`/`later`, the same ordering as
 `neighbors`, and records the selection in history. It stops at the library
 boundaries. Actions run once per press; while a command is busy, additional
-wallpaper actions are ignored. The keyboard button also opens help.
+wallpaper actions are ignored. The keyboard button also opens help, which
+groups the bindings as tinted key chips and fades the preview out and back in
+while it swaps.
 
 Noctalia 5.0.1 can keep `?` held if Shift is released before the question-mark
 key. Use `F1` or the keyboard button if that happens; closing the panel resets

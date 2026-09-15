@@ -143,6 +143,7 @@ local runs = {}
 local clipboardCalls = {}
 local toggledPanel
 local widgetGlyph
+local frameTicksWanted
 
 noctalia = {
   copyToClipboard = function(text, mimeType)
@@ -190,6 +191,7 @@ panel = {
     menuRequests[#menuRequests + 1] = request
     return true
   end,
+  setNeedsFrameTick = function(needed) frameTicksWanted = needed end,
 }
 ui = {}
 for _, name in ipairs({ "box", "button", "column", "glyph", "image", "label", "row", "scroll", "spacer" }) do
@@ -237,6 +239,20 @@ local function labelNode(node, predicate)
     if found then return found end
   end
   return nil
+end
+
+local function findWhere(node, predicate)
+  if predicate(node) then return node end
+  for _, child in ipairs(node.children) do
+    local found = findWhere(child, predicate)
+    if found then return found end
+  end
+  return nil
+end
+
+local function finishFade()
+  onFrameTick(120)
+  onFrameTick(120)
 end
 
 onOpen({})
@@ -339,7 +355,7 @@ assert(type(onKey) == "function", "panel must handle captured keys")
 for _, binding in ipairs({
   { "h", "previous" }, { "Left", "previous" }, { "l", "next" }, { "Right", "next" },
   { "k", "earlier" }, { "Up", "earlier" }, { "j", "later" }, { "Down", "later" },
-  { "r", "random" }, { "f", "favorite" }, { "e", "edit" },
+  { "r", "random" }, { "f", "favorite" }, { "space", "favorite" }, { "e", "edit" },
 }) do
   local count = #runs
   onKey(binding[1], false)
@@ -363,22 +379,60 @@ local runCount = #runs
 onKey("unknown", true)
 equal(#runs, runCount)
 onKey("shift+question", true)
-assert(find(rendered, "image") == nil, "help must replace the preview")
+assert(find(rendered, "image") ~= nil, "help fades the preview out before swapping")
+assert(frameTicksWanted, "the fade turns frame ticks on")
+onFrameTick(60)
+equal(rendered.children[1].props.opacity, 0.5, "frame fades out halfway")
+onFrameTick(60)
+equal(rendered.children[1].props.opacity, 0, "frame is invisible at the swap point")
+assert(find(rendered, "image") == nil, "help replaces the preview once faded out")
+onFrameTick(60)
+equal(rendered.children[1].props.opacity, 0.5, "frame fades back in")
+onFrameTick(60)
+assert(rendered.children[1].props.opacity == nil, "a completed fade leaves the frame fully opaque")
+assert(not frameTicksWanted, "frame ticks stop when the fade completes")
+
+for _, group in ipairs({ "Navigate", "Act", "Panel" }) do
+  assert(labelNode(rendered, function(props) return props.text == group and props.color == "on_surface_variant" end),
+    "help groups shortcuts under a " .. group .. " header")
+end
+assert(labelNode(rendered, function(props)
+  return props.text == "f / space" and props.fontFamily == "monospace" and props.color == "tertiary"
+end), "keys render as tinted monospace chips")
+local chip = assert(findWhere(rendered, function(node)
+  return node.type == "row" and node.props.fill == "tertiary/0.12"
+end), "key chips sit on a tinted surface")
+assert(type(chip.props.minWidth) == "number", "chips keep a uniform width")
+assert(labelNode(rendered, function(props) return props.text == "Toggle favorite" and props.color == nil end),
+  "effects render in the default text color")
+
 onKey("shift+question", false)
 assert(find(rendered, "image") == nil, "release must leave help open")
 onKey("shift+question", true)
+finishFade()
 assert(find(rendered, "image") ~= nil, "help must toggle back to the preview")
 onKey("F1", true)
+finishFade()
 assert(find(rendered, "image") == nil, "unshifted help key must open help")
 onKey("F1", false)
 assert(find(rendered, "image") == nil)
 onKey("F1", true)
+finishFade()
 assert(find(rendered, "image") ~= nil)
 assert(button(rendered, "help")).props.onClick()
-assert(find(rendered, "image") == nil)
+finishFade()
+assert(find(rendered, "image") == nil, "the keyboard button toggles help too")
+onKey("shift+question", true)
+onKey("shift+question", true)
+finishFade()
+assert(find(rendered, "image") ~= nil, "a press mid-fade is ignored, so help toggles once")
+onKey("shift+question", true)
 onOpen({})
+assert(not frameTicksWanted, "opening stops an in-flight fade")
 runs[#runs].callback(success("with source"))
 assert(find(rendered, "image") ~= nil, "opening must reset help")
+onFrameTick(120)
+assert(find(rendered, "image") ~= nil, "stray ticks after a reset are inert")
 
 onKey("l", true)
 runs[#runs].callback({ exitCode = 1, stdout = "", stderr = "navigation failed", timedOut = false })
@@ -388,7 +442,7 @@ runs[#runs].callback(success())
 runs[#runs].callback(success("invalid current"))
 runCount = #runs
 count = #clipboardCalls
-for _, chord in ipairs({ "f", "e", "y", "j", "k" }) do onKey(chord, true) end
+for _, chord in ipairs({ "f", "space", "e", "y", "j", "k" }) do onKey(chord, true) end
 equal(#runs, runCount, "photo actions require loaded metadata")
 equal(#clipboardCalls, count)
 
