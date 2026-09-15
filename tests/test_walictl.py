@@ -7,6 +7,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from contextlib import redirect_stderr, redirect_stdout
@@ -512,6 +513,33 @@ def test_output_required_for_anchor(walictl: ModuleType) -> None:
     walictl.output_required({"brightness": 1}, None)
     with pytest.raises(walictl.WalictlError, match="config key edits.output is required for anchor"):
         walictl.output_required({"anchor": "top"}, None)
+
+
+@pytest.mark.skipif(shutil.which("magick") is None, reason="ImageMagick is not installed")
+def test_preview_matches_downscaled_full_render(walictl: ModuleType, tmp_path: Path) -> None:
+    source = tmp_path / "PXL_20210608_111152739.jpg"
+    subprocess.run(
+        ["magick", "-size", "1200x800", "plasma:fractal", "-seed", "7", "-quality", "95", str(source)],
+        check=True, capture_output=True,
+    )
+    recipe = {"rotate": 90, "anchor": "top", "blur": 6, "bloom": 40, "saturation": 70}
+    output = (1600, 1000)
+    full, preview = tmp_path / "full.jpg", tmp_path / "preview.jpg"
+    walictl.render(source, recipe, output, full)
+    walictl.render(source, recipe, output, preview, walictl.PREVIEW_WIDTH)
+    shrunk = tmp_path / "shrunk.jpg"
+    subprocess.run(["magick", str(full), "-resize", f"{walictl.PREVIEW_WIDTH}x", str(shrunk)], check=True, capture_output=True)
+    sizes = [
+        subprocess.run(["magick", "identify", "-format", "%w %h", str(p)], check=True, capture_output=True, text=True).stdout
+        for p in (shrunk, preview)
+    ]
+    assert sizes[0] == sizes[1], f"preview {sizes[1]!r} must have the shrunk full render's size {sizes[0]!r}"
+    compare = subprocess.run(
+        ["magick", "compare", "-metric", "RMSE", str(shrunk), str(preview), "null:"], check=False, capture_output=True, text=True
+    )
+    # compare exits 1 when images differ at all; the metric is what matters: "123.4 (0.0188)"
+    normalized = float(compare.stderr.strip().split("(")[1].rstrip(")"))
+    assert normalized < 0.03, f"preview diverges from the full render: RMSE {normalized}"
 
 
 def test_ensure_variant_renders_per_key_and_never_deletes(
