@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -210,10 +211,6 @@ def scan_library(directory: Path) -> dict[str, Path]:
     return dict(sorted(chosen.items()))
 
 
-def resolve_variant(config: Config, photo_id: str) -> Path | None:
-    return None  # replaced by current_variant once recipes exist
-
-
 def resolve_source(config: Config, photo_id: str) -> Path | None:
     taken = capture_date(photo_id)
     if config.archive_root is None or taken is None:
@@ -223,13 +220,9 @@ def resolve_source(config: Config, photo_id: str) -> Path | None:
 
 
 def display_path(config: Config, library: dict[str, Path], photo_id: str) -> Path:
-    variant = resolve_variant(config, photo_id)
-    if variant is not None:
-        return variant
-    try:
-        return library[photo_id]
-    except KeyError as exc:
-        raise WalictlError(f"unknown photo id: {photo_id}") from exc
+    if photo_id not in library:
+        raise WalictlError(f"unknown photo id: {photo_id}")
+    return ensure_variant(config, library, photo_id) or library[photo_id]
 
 
 # --- shared helpers ---------------------------------------------------------
@@ -594,6 +587,101 @@ def render(
     _magick(magick_argv(source, recipe, output, dest, preview_width)[1:])
 
 
+# --- variant cache ----------------------------------------------------------
+
+
+def source_identity(path: Path) -> dict[str, object]:
+    stat = path.stat()
+    return {"path": str(path), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def render_key(recipe: dict[str, int | str], output: tuple[int, int] | None, identity: dict[str, object]) -> str:
+    payload = {"recipe": recipe, "output": list(output) if output else None, "source": identity}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def render_to_temp(
+    source: Path, recipe: dict[str, int | str], output: tuple[int, int] | None, target_dir: Path,
+    preview_width: int | None = None,
+) -> Path:
+    """Render into a .tmp.jpg beside its future home; the caller publishes or deletes it."""
+    target_dir.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=".render.", suffix=".tmp.jpg", dir=target_dir)
+    os.close(fd)
+    tmp = Path(name)
+    try:
+        render(source, recipe, output, tmp, preview_width)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return tmp
+
+
+def publish_variant(tmp: Path, photo_id: str, key: str) -> Path:
+    target = variant_file(photo_id, key)
+    os.replace(tmp, target)
+    return target
+
+
+def prune_variants(photo_id: str, keep: Path | None) -> None:
+    """Remove every render of the photo except `keep`. Caller holds variants.lock."""
+    root = variant_dir(photo_id)
+    if not root.is_dir():
+        return
+    for keyed in root.iterdir():
+        if keep is not None and keyed == keep.parent:
+            continue
+        for stale in keyed.iterdir():
+            stale.unlink()
+        keyed.rmdir()
+    if not any(root.iterdir()):
+        root.rmdir()
+
+
+def recipe_key(config: Config, library: dict[str, Path], photo_id: str) -> tuple[dict[str, int | str] | None, str | None]:
+    """The photo's recipe and the key of its render on this host.
+
+    The key is None when there is no recipe, and also when the library has no
+    file for the id: a recipe can outlive its photo, and metadata queries must
+    keep answering for the rest of the library.
+    """
+    if config.edits is None:
+        return None, None
+    with locked(edits_lock()):
+        recipe = EditsStore.load(config.edits.file).get(photo_id)
+    if recipe is None:
+        return None, None
+    source = library.get(photo_id)
+    if source is None:
+        return recipe, None
+    return recipe, render_key(recipe, config.edits.output, source_identity(source))
+
+
+def current_variant(config: Config, library: dict[str, Path], photo_id: str) -> Path | None:
+    """The photo's up-to-date render if one exists on disk. Never renders, never deletes."""
+    _recipe, key = recipe_key(config, library, photo_id)
+    if key is None:
+        return None
+    target = variant_file(photo_id, key)
+    return target if target.is_file() else None
+
+
+def ensure_variant(config: Config, library: dict[str, Path], photo_id: str) -> Path | None:
+    """The photo's render, rendering it if missing. Never deletes: pruning waits for a successful set."""
+    recipe, key = recipe_key(config, library, photo_id)
+    if recipe is None:
+        return None
+    if key is None:
+        raise WalictlError(f"unknown photo id: {photo_id}")
+    with locked(variants_lock()):
+        target = variant_file(photo_id, key)
+        if target.is_file():
+            return target
+        output_required(recipe, config.edits.output if config.edits else None)
+        tmp = render_to_temp(library[photo_id], recipe, config.edits.output if config.edits else None, target.parent)
+        return publish_variant(tmp, photo_id, key)
+
+
 # --- history ----------------------------------------------------------------
 
 HISTORY_VERSION = 1
@@ -767,7 +855,7 @@ def describe(
     photo = photo_id(displayed)
     taken = capture_date(photo)
     source = resolve_source(ctx.config, photo)
-    variant = resolve_variant(ctx.config, photo)
+    variant = current_variant(ctx.config, library, photo)
     return {
         "ok": True,
         "id": photo,
@@ -792,9 +880,11 @@ def cmd_current(ctx: Context, args: argparse.Namespace) -> int:
     return 0
 
 
-def replay_path(config: Config, entry: HistoryEntry) -> Path:
-    """Prefer a variant created since the history entry was recorded."""
-    return resolve_variant(config, entry.id) or Path(entry.path)
+def replay_path(config: Config, library: dict[str, Path], entry: HistoryEntry) -> Path:
+    """Resolve a history entry by id: its variant when a recipe exists, else the library file."""
+    if entry.id in library:
+        return ensure_variant(config, library, entry.id) or library[entry.id]
+    return Path(entry.path)
 
 
 def navigate(ctx: Context, action: str, rng: random.Random) -> str:
@@ -811,6 +901,7 @@ def navigate(ctx: Context, action: str, rng: random.Random) -> str:
             ctx.out.write(f"{'recorded' if changed else 'unchanged'} {current.id}\n")
             return current.id
 
+        library = scan_library(ctx.config.wallpaper_dir)
         delta = (
             -1
             if action == "previous" and history.cursor > 0
@@ -820,14 +911,15 @@ def navigate(ctx: Context, action: str, rng: random.Random) -> str:
         )
         if delta:
             target = history.entries[history.cursor + delta]
-            displayed = replay_path(ctx.config, target)
+            displayed = replay_path(ctx.config, library, target)
             ctx.noctalia.set_default(displayed)
+            with locked(variants_lock()):
+                prune_variants(target.id, keep=displayed)
             target.path = str(displayed)
             history.cursor += delta
         elif action == "previous":
             raise WalictlError("already at the oldest wallpaper in history")
         else:
-            library = scan_library(ctx.config.wallpaper_dir)
             ratings = Ratings.load(ctx.config.favorites_file)
             if action in ("earlier", "later"):
                 ordered, index = dated_position(library, current.id, ratings.hidden)
@@ -847,6 +939,8 @@ def navigate(ctx: Context, action: str, rng: random.Random) -> str:
                 picked = sample(weighted, rng, lambda message: print(message, file=ctx.err))
             displayed = display_path(ctx.config, library, picked)
             ctx.noctalia.set_default(displayed)
+            with locked(variants_lock()):
+                prune_variants(picked, keep=displayed)
             history.push(HistoryEntry(ts=utc_now(), id=picked, path=str(displayed), origin=action))
         history.save(path)
         selected = history.current()
@@ -911,7 +1005,7 @@ def _rating_items(ctx: Context, entries: dict[str, dict[str, str]]) -> list[dict
     library = scan_library(ctx.config.wallpaper_dir)
     items = []
     for photo in sorted(entries):
-        path = resolve_variant(ctx.config, photo) or library.get(photo)
+        path = current_variant(ctx.config, library, photo) or library.get(photo)
         source = resolve_source(ctx.config, photo)
         taken = capture_date(photo)
         items.append(
