@@ -473,6 +473,8 @@ class EditsStore:
             if not isinstance(value.get("updated"), str):
                 raise WalictlError(f"malformed edits entry: {photo}: missing updated")
             recipe = validate_recipe({k: v for k, v in value.items() if k != "updated"}, f"malformed edits entry: {photo}")
+            if not recipe:
+                continue  # an all-default recipe is not stored
             checked[str(photo)] = {**recipe, "updated": value["updated"]}
         return cls(edits=checked)
 
@@ -877,7 +879,14 @@ def cmd_import_favorites(ctx: Context, args: argparse.Namespace) -> int:
     except FileNotFoundError as exc:
         raise WalictlError(f"favorites source not found: {source}") from exc
     library = scan_library(ctx.config.wallpaper_dir)
-    ids = [photo_id(Path(line)) for line in lines]
+    ids: list[str] = []
+    for line in lines:
+        photo = photo_id(Path(line))
+        try:
+            check_photo_id(photo, "imported photo id")
+        except WalictlError as exc:
+            raise WalictlError(f"{exc} (from {line!r})") from exc
+        ids.append(photo)
     unique_ids = sorted(set(ids))
     dangling = sorted({line for line in lines if not Path(line).expanduser().exists()})
     missing = [photo for photo in unique_ids if photo not in library]

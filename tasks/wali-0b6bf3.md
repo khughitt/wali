@@ -8,7 +8,7 @@ complexity: low
 process: planned
 owner: quick-edit-recipes
 created: 2026-09-13T17:59:09Z
-updated: 2026-09-15T09:57:47Z
+updated: 2026-09-15T10:25:59Z
 started: 2026-09-15T09:53:31Z
 completed: 2026-09-15T09:57:47Z
 depends: [wali-eea384]
@@ -22,3 +22,4 @@ step: "Task 2: Recipe model and `EditsStore`"
 
 - 2026-09-15T09:53:47Z (quick-edit-recipes): process=planned: reusing the committed spec and plan, same as Task 1
 - 2026-09-15T09:57:47Z (quick-edit-recipes): recipe validation, --set parsing, canonical form, EditsStore
+- 2026-09-15T10:25:59Z (quick-edit-recipes): review fixes: import-favorites validates imported ids before saving (a bad stem no longer bricks the favorites file), and EditsStore.load drops all-default recipes so get() returns None — the plan's snippet kept them; code deviates deliberately

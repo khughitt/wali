@@ -381,6 +381,11 @@ def test_edits_store_round_trip_and_validation(walictl: ModuleType, tmp_path: Pa
         path.write_text(text)
         with pytest.raises(walictl.WalictlError, match=re.escape(message)):
             walictl.EditsStore.load(path)
+    path.write_text('{"version": 1, "edits": {"a": {"rotate": 0, "updated": "T"}}}')
+    loaded = walictl.EditsStore.load(path)
+    assert loaded.get("a") is None, "an all-default recipe loads as absent"
+    loaded.save(path)
+    assert json.loads(path.read_text())["edits"] == {}, "a save drops all-default recipes"
 
 
 def test_edit_locks_live_in_state_dir(walictl: ModuleType, env: dict[str, Path]) -> None:
@@ -1240,3 +1245,16 @@ def test_import_favorites_force_preserves_hidden_and_refuses_conflicts(
 def test_import_favorites_fails_on_missing_source(walictl: ModuleType, env: dict[str, Path], tmp_path: Path) -> None:
     code, _, stderr = run_cli(walictl, ["import-favorites", str(tmp_path / "nope.txt")])
     assert (code, stderr) == (1, f"favorites source not found: {tmp_path / 'nope.txt'}\n")
+
+
+def test_import_favorites_rejects_bad_ids_and_preserves_the_file(
+    walictl: ModuleType, env: dict[str, Path], tmp_path: Path
+) -> None:
+    store = walictl.Ratings(favorites={}, hidden={})
+    store.add_favorite("old", "T")
+    store.save(env["favorites"])
+    source = tmp_path / "favorites.txt"
+    source.write_text("x.jpg\n/\n")
+    code, _, stderr = run_cli(walictl, ["import-favorites", "--force", str(source)])
+    assert code == 1 and "imported photo id must be a single file name stem" in stderr
+    assert walictl.Ratings.load(env["favorites"]).favorite_ids() == ["old"]
