@@ -300,6 +300,7 @@ def _rating_entries(payload: dict[str, object], key: str, path: Path) -> dict[st
         raise WalictlError(f"favorites file has no {key} object: {path}")
     checked: dict[str, dict[str, str]] = {}
     for photo, value in entries.items():
+        check_photo_id(photo, "favorites file id")
         if not isinstance(value, dict) or not isinstance(value.get("added"), str):
             raise WalictlError(f"malformed {key} entry: {photo} in {path}")
         checked[str(photo)] = {"added": value["added"]}
@@ -359,6 +360,139 @@ class Ratings:
 
     def remove_hidden(self, photo_id: str) -> bool:
         return self.hidden.pop(photo_id, None) is not None
+
+
+# --- recipes ----------------------------------------------------------------
+
+EDITS_VERSION = 1
+ROTATIONS: tuple[int, ...] = (0, 90, 180, 270)
+ANCHORS: tuple[str, ...] = ("center", "top", "bottom", "left", "right")
+RECIPE_DEFAULTS: dict[str, int | str] = {
+    "rotate": 0, "brightness": 0, "contrast": 0, "saturation": 100, "hue": 0,
+    "blur": 0, "noise": 0, "bloom": 0, "anchor": "center",
+}
+RECIPE_RANGES: dict[str, tuple[int, int]] = {
+    "brightness": (-100, 100), "contrast": (-100, 100), "saturation": (0, 200), "hue": (-180, 180),
+    "blur": (0, 20), "noise": (0, 100), "bloom": (0, 100),
+}
+
+
+def edits_lock() -> Path:
+    return state_dir() / "edits.lock"
+
+
+def variants_lock() -> Path:
+    return state_dir() / "variants.lock"
+
+
+def _check_recipe_value(key: str, value: object) -> int | str:
+    if key == "anchor":
+        if not isinstance(value, str) or value not in ANCHORS:
+            raise WalictlError(f"anchor must be one of {', '.join(ANCHORS)}")
+        return value
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise WalictlError(f"{key} must be an integer")
+    if key == "rotate":
+        if value not in ROTATIONS:
+            raise WalictlError("rotate must be one of " + ", ".join(str(r) for r in ROTATIONS))
+        return value
+    low, high = RECIPE_RANGES[key]
+    if not low <= value <= high:
+        raise WalictlError(f"{key} must be between {low} and {high}")
+    return value
+
+
+def validate_recipe(raw: object, label: str) -> dict[str, int | str]:
+    """A recipe with only non-default keys, or an error prefixed with `label`."""
+    if not isinstance(raw, dict):
+        raise WalictlError(f"{label}: recipe must be an object")
+    recipe: dict[str, int | str] = {}
+    for key, value in raw.items():
+        if key not in RECIPE_DEFAULTS:
+            raise WalictlError(f"{label}: unknown recipe key: {key}")
+        try:
+            checked = _check_recipe_value(key, value)
+        except WalictlError as exc:
+            raise WalictlError(f"{label}: {exc}") from exc
+        if checked != RECIPE_DEFAULTS[key]:
+            recipe[key] = checked
+    return recipe
+
+
+def parse_settings(settings: list[str]) -> dict[str, int | str]:
+    raw: dict[str, object] = {}
+    for setting in settings:
+        key, sep, text = setting.partition("=")
+        if not sep:
+            raise WalictlError(f"settings take the form key=value: {setting}")
+        if key in raw:
+            raise WalictlError(f"duplicate setting: {key}")
+        if key not in RECIPE_DEFAULTS:
+            raise WalictlError(f"unknown recipe key: {key}")
+        if key == "anchor":
+            raw[key] = text
+        else:
+            try:
+                raw[key] = int(text)
+            except ValueError as exc:
+                raise WalictlError(f"{key} must be an integer") from exc
+    try:
+        return validate_recipe(raw, "settings")
+    except WalictlError as exc:
+        raise WalictlError(str(exc).removeprefix("settings: ")) from exc
+
+
+def effective(recipe: dict[str, int | str]) -> dict[str, int | str]:
+    return {**RECIPE_DEFAULTS, **recipe}
+
+
+def canonical(recipe: dict[str, int | str]) -> str:
+    return json.dumps(recipe, sort_keys=True, separators=(",", ":"))
+
+
+@dataclass
+class EditsStore:
+    edits: dict[str, dict[str, object]]
+
+    @classmethod
+    def load(cls, path: Path) -> EditsStore:
+        payload = read_json(path, "edits file")
+        if payload is None:
+            return cls(edits={})
+        version = payload.get("version")
+        if type(version) is not int or version != EDITS_VERSION:
+            raise WalictlError(f"unsupported edits version in {path}: {version!r}")
+        entries = payload.get("edits")
+        if not isinstance(entries, dict):
+            raise WalictlError(f"edits file has no edits object: {path}")
+        checked: dict[str, dict[str, object]] = {}
+        for photo, value in entries.items():
+            check_photo_id(photo, "edits file id")
+            if not isinstance(value, dict):
+                raise WalictlError(f"malformed edits entry: {photo}")
+            if not isinstance(value.get("updated"), str):
+                raise WalictlError(f"malformed edits entry: {photo}: missing updated")
+            recipe = validate_recipe({k: v for k, v in value.items() if k != "updated"}, f"malformed edits entry: {photo}")
+            checked[str(photo)] = {**recipe, "updated": value["updated"]}
+        return cls(edits=checked)
+
+    def save(self, path: Path) -> None:
+        write_json_atomic(path, {"version": EDITS_VERSION, "edits": self.edits})
+
+    def get(self, photo_id: str) -> dict[str, int | str] | None:
+        entry = self.edits.get(photo_id)
+        if entry is None:
+            return None
+        return {k: v for k, v in entry.items() if k != "updated"}  # type: ignore[misc]
+
+    def set(self, photo_id: str, recipe: dict[str, int | str], now: str) -> None:
+        if not recipe:
+            self.edits.pop(photo_id, None)
+            return
+        self.edits[photo_id] = {**recipe, "updated": now}
+
+    def remove(self, photo_id: str) -> bool:
+        return self.edits.pop(photo_id, None) is not None
 
 
 # --- history ----------------------------------------------------------------

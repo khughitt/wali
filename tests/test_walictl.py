@@ -323,9 +323,69 @@ def test_ratings_reject_corrupt_file(walictl: ModuleType, tmp_path: Path) -> Non
     path.write_text('{"version": 2, "favorites": {}}')
     with pytest.raises(walictl.WalictlError, match="favorites file has no hidden object"):
         walictl.Ratings.load(path)
+    path.write_text('{"version": 2, "favorites": {"../x": {"added": "T"}}, "hidden": {}}')
+    with pytest.raises(walictl.WalictlError, match="favorites file id must be a single file name stem"):
+        walictl.Ratings.load(path)
     path.write_text('{"version": 2, "favorites": {"a": {"added": "T"}}, "hidden": {"a": {"added": "T"}}}')
     with pytest.raises(walictl.WalictlError, match="photo in both favorites and hidden: a"):
         walictl.Ratings.load(path)
+
+
+def test_parse_settings_drops_defaults_and_validates(walictl: ModuleType) -> None:
+    assert walictl.parse_settings([]) == {}
+    assert walictl.parse_settings(["brightness=0", "saturation=100", "anchor=center", "rotate=0"]) == {}
+    assert walictl.parse_settings(["rotate=90", "brightness=-10", "saturation=80", "anchor=top"]) == {
+        "rotate": 90, "brightness": -10, "saturation": 80, "anchor": "top",
+    }
+    for bad, message in (
+        (["rotate=45"], "rotate must be one of 0, 90, 180, 270"),
+        (["anchor=middle"], "anchor must be one of center, top, bottom, left, right"),
+        (["brightness=101"], "brightness must be between -100 and 100"),
+        (["blur=-1"], "blur must be between 0 and 20"),
+        (["blur=1.5"], "blur must be an integer"),
+        (["chroma=5"], "unknown recipe key: chroma"),
+        (["brightness"], "settings take the form key=value: brightness"),
+        (["brightness=1", "brightness=2"], "duplicate setting: brightness"),
+    ):
+        with pytest.raises(walictl.WalictlError, match=re.escape(message)):
+            walictl.parse_settings(bad)
+
+
+def test_effective_and_canonical_recipe(walictl: ModuleType) -> None:
+    assert walictl.effective({"rotate": 90}) == {**walictl.RECIPE_DEFAULTS, "rotate": 90}
+    assert walictl.canonical({"saturation": 80, "rotate": 90}) == '{"rotate":90,"saturation":80}'
+    assert walictl.canonical({}) == "{}"
+
+
+def test_edits_store_round_trip_and_validation(walictl: ModuleType, tmp_path: Path) -> None:
+    path = tmp_path / "edits.json"
+    store = walictl.EditsStore.load(path)
+    assert store.get("a") is None
+    store.set("a", {"rotate": 90, "anchor": "top"}, "T1")
+    store.save(path)
+    loaded = walictl.EditsStore.load(path)
+    assert loaded.get("a") == {"rotate": 90, "anchor": "top"}
+    assert json.loads(path.read_text()) == {"version": 1, "edits": {"a": {"rotate": 90, "anchor": "top", "updated": "T1"}}}
+    assert loaded.remove("a") is True and loaded.remove("a") is False
+    loaded.set("b", {}, "T2")
+    assert loaded.get("b") is None, "an all-default recipe is not stored"
+    for text, message in (
+        ("{not json", "edits file is not valid JSON"),
+        ('{"version": 2, "edits": {}}', "unsupported edits version"),
+        ('{"version": 1}', "edits file has no edits object"),
+        ('{"version": 1, "edits": {"a": 5}}', "malformed edits entry: a"),
+        ('{"version": 1, "edits": {"a": {"rotate": 45, "updated": "T"}}}', "malformed edits entry: a: rotate must be one of"),
+        ('{"version": 1, "edits": {"a": {"rotate": 90}}}', "malformed edits entry: a: missing updated"),
+        ('{"version": 1, "edits": {"../victim": {"rotate": 90, "updated": "T"}}}', "edits file id must be a single file name stem"),
+    ):
+        path.write_text(text)
+        with pytest.raises(walictl.WalictlError, match=re.escape(message)):
+            walictl.EditsStore.load(path)
+
+
+def test_edit_locks_live_in_state_dir(walictl: ModuleType, env: dict[str, Path]) -> None:
+    assert walictl.edits_lock() == env["state_home"] / "wali" / "edits.lock"
+    assert walictl.variants_lock() == env["state_home"] / "wali" / "variants.lock"
 
 
 @pytest.mark.parametrize("version", [True, 1.0])
