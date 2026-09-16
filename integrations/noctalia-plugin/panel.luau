@@ -3,7 +3,7 @@ local Shell = require("./shell.luau")
 
 local state = {
   busy = false, loading = false, keepError = false, errorText = nil, current = nil,
-  view = "photo", hiddenList = nil, hoverHide = false,
+  view = "photo", hiddenList = nil, hoverHide = false, edit = nil,
 }
 
 local render
@@ -202,7 +202,158 @@ local function openHideMenu()
   })
 end
 
+local function editRecipe()
+  local recipe = {}
+  for key, value in pairs(state.edit.recipe) do recipe[key] = value end
+  return recipe
+end
+
+local requestPreview
+
+local function finishPreview(generation, result)
+  state.busy = false
+  if state.edit then state.edit.previewing = false end
+  if state.edit == nil or state.edit.generation ~= generation then
+    render()
+    return
+  end
+  local message = resultError(result, "walictl variant preview")
+  local path
+  if not message then path, message = Logic.previewPath(result.stdout) end
+  if message then
+    state.errorText = message
+  else
+    state.edit.previewPath = path
+    state.errorText = nil
+  end
+  render()
+  if state.edit.pending then
+    state.edit.pending = false
+    requestPreview()
+  end
+end
+
+requestPreview = function()
+  if state.edit == nil then return end
+  if not Logic.canStart(state.busy) then
+    state.edit.pending = true
+    return
+  end
+  state.busy = true
+  state.edit.previewing = true
+  local generation = state.edit.generation
+  render()
+  if not run(Logic.variantCommand("preview", state.edit.id, editRecipe()), function(result)
+    finishPreview(generation, result)
+  end) then
+    state.busy = false
+    state.edit.previewing = false
+    state.errorText = "Failed to launch walictl variant preview"
+    render()
+  end
+end
+
+local function setRecipeValue(key, value)
+  if state.edit == nil or not state.edit.seeded then return end
+  state.edit.recipe[key] = value
+  requestPreview()
+end
+
+local generationCounter = 0
+
+local function enterEdit()
+  if not state.current or not Logic.canStart(state.busy) then return end
+  generationCounter = generationCounter + 1
+  local id = state.current.id
+  state.edit = {
+    id = id, recipe = {}, generation = generationCounter, previewPath = nil, pending = false,
+    seeded = false, previewing = false, edited = false,
+  }
+  state.busy = true
+  state.errorText = nil
+  render()
+  local launched = run(Logic.variantCommand("show", id), function(result)
+    state.busy = false
+    if state.edit == nil or state.edit.id ~= id then
+      render()
+      return
+    end
+    local message = resultError(result, "walictl variant show")
+    local payload
+    if not message then payload, message = Logic.decodeVariant(result.stdout, noctalia.json.decode) end
+    if message then
+      state.edit = nil
+      state.errorText = message
+    else
+      state.edit.recipe = payload.recipe
+      state.edit.edited = payload.edited
+      state.edit.seeded = true
+    end
+    render()
+  end)
+  if not launched then
+    state.busy = false
+    state.edit = nil
+    state.errorText = "Failed to launch walictl variant show"
+    render()
+  end
+end
+
+local function leaveEdit()
+  generationCounter = generationCounter + 1
+  state.edit = nil
+  render()
+end
+
+local function toggleEdit()
+  if state.edit then leaveEdit() else enterEdit() end
+end
+
+local function finishVariantChange(action, result)
+  state.busy = false
+  local message = resultError(result, "walictl variant " .. action)
+  if message then
+    state.errorText = message
+    render()
+    return
+  end
+  generationCounter = generationCounter + 1
+  state.edit = nil
+  state.errorText = nil
+  refresh()
+end
+
+local function applyEdit()
+  if state.edit == nil or not state.edit.seeded or not Logic.canStart(state.busy) then return end
+  state.busy = true
+  render()
+  local recipe = editRecipe()
+  local launched = run(Logic.variantCommand("apply", state.edit.id, recipe), function(result)
+    finishVariantChange("apply", result)
+  end)
+  if not launched then
+    state.busy = false
+    state.errorText = "Failed to launch walictl variant apply"
+    render()
+  end
+end
+
+local function resetEdit()
+  if state.edit == nil or not state.edit.seeded or not Logic.canStart(state.busy) then return end
+  state.busy = true
+  render()
+  local launched = run(Logic.variantCommand("reset", state.edit.id), function(result)
+    finishVariantChange("reset", result)
+  end)
+  if not launched then
+    state.busy = false
+    state.errorText = "Failed to launch walictl variant reset"
+    render()
+  end
+end
+
 local frameHeight = 304
+local editFrameHeight = 200
 local fadeMs = 120
 
 -- View switches fade the frame out, swap at zero opacity, and fade back in.
@@ -347,6 +498,12 @@ local function hiddenView(enabled)
 end
 
 local function frame(enabled)
+  if state.edit and state.current then
+    return ui.image({
+      path = state.edit.previewPath or state.current.path, height = editFrameHeight, radius = 14, fit = "contain",
+      border = "outline/0.5", borderWidth = 1,
+    })
+  end
   if state.view == "hidden" then return hiddenView(enabled) end
   if state.view == "help" then return helpView() end
   if state.current then
@@ -361,6 +518,50 @@ local function frame(enabled)
     border = "outline/0.5", borderWidth = 1, align = "center", justify = "center",
   }, {
     ui.glyph({ name = state.loading and "loader" or "wallpaper", size = 48, color = "on_surface_variant/0.6" }),
+  })
+end
+
+local function sliderRow(spec, enabled)
+  local value = state.edit.recipe[spec.key] or spec.default
+  return ui.row({ align = "center", gap = 8 }, {
+    ui.label({ text = spec.label, fontSize = 12, width = 78 }),
+    ui.slider({ key = "slider:" .. spec.key, min = spec.min, max = spec.max, step = 1, value = value,
+      controlSize = "sm", flexGrow = 1, enabled = enabled,
+      onDragEnd = function(newValue) setRecipeValue(spec.key, math.floor(newValue + 0.5)) end }),
+    ui.label({ text = tostring(value), fontSize = 11, fontFamily = "monospace", width = 36, textAlign = "end" }),
+  })
+end
+
+local function choiceRow(label, key, choices, enabled)
+  local buttons = { ui.label({ text = label, fontSize = 12, width = 78 }) }
+  local current = state.edit.recipe[key] or Logic.recipeDefaults[key]
+  for _, choice in ipairs(choices) do
+    buttons[#buttons + 1] = ui.button({ key = key .. ":" .. tostring(choice), text = tostring(choice), fontSize = 11,
+      variant = "ghost", controlSize = "sm", selected = current == choice, enabled = enabled,
+      onClick = function() setRecipeValue(key, choice) end })
+  end
+  return ui.row({ align = "center", gap = 4 }, buttons)
+end
+
+local function editControls()
+  local edit = state.edit
+  local draftEnabled = edit.seeded and (not state.busy or edit.previewing)
+  local actionEnabled = edit.seeded and not state.busy
+  local rows = {}
+  for _, spec in ipairs(Logic.sliders) do rows[#rows + 1] = sliderRow(spec, draftEnabled) end
+  rows[#rows + 1] = choiceRow("Rotate", "rotate", Logic.rotations, draftEnabled)
+  rows[#rows + 1] = choiceRow("Anchor", "anchor", Logic.anchors, draftEnabled)
+  return ui.column({ gap = 10, flexGrow = 1 }, {
+    ui.scroll({ flexGrow = 1, gap = 6 }, rows),
+    ui.row({ align = "center", gap = 8 }, {
+      ui.button({ key = "reset", text = "Reset", variant = "destructive", controlSize = "sm",
+        enabled = actionEnabled and edit.edited, tooltip = "Remove the recipe and its renders", onClick = resetEdit }),
+      ui.spacer({ flexGrow = 1 }),
+      ui.button({ key = "cancel", text = "Cancel", variant = "ghost", controlSize = "sm", enabled = true, onClick = leaveEdit }),
+      ui.button({ key = "apply", text = "Apply", variant = "primary", controlSize = "sm",
+        enabled = actionEnabled and (not Logic.isDefaultRecipe(edit.recipe) or edit.edited),
+        tooltip = "Save the recipe and render it", onClick = applyEdit }),
+    }),
   })
 end
 
@@ -404,6 +605,7 @@ local function actions(current, enabled)
       color = "on_surface_variant", visible = position ~= "" }),
     navButton("random", "dice", "Random (r) · or click the photo", enabled),
     ui.spacer({ flexGrow = 1 }),
+    utilityButton("adjust", "adjustments", "Adjust (a)", loaded, toggleEdit),
     utilityButton("hide", Logic.hideGlyph(current ~= nil and current.hidden, state.hoverHide), Logic.hideTooltip(current ~= nil and current.hidden), loaded, hideOrRestore, openHideMenu, onHideHover),
     utilityButton("edit", "photo-edit", "Edit in GIMP (e)", loaded, function() startAction("edit") end),
     utilityButton("copy", "clipboard", "Copy source path (y)", current ~= nil, copyPath),
@@ -416,6 +618,15 @@ render = function()
   local current = state.current
   local frameNode = frame(enabled)
   if fade.alpha < 1 then frameNode.props.opacity = fade.alpha end
+  if state.edit and current then
+    panel.render(ui.column({ flexGrow = 1, gap = 12, padding = 24 }, {
+      frameNode,
+      ui.label({ text = Logic.captionDetail(current, state.errorText).text, fontSize = 12, fontFamily = "monospace",
+        color = Logic.captionDetail(current, state.errorText).color, maxLines = 2 }),
+      editControls(),
+    }))
+    return
+  end
   panel.render(ui.column({ flexGrow = 1, gap = 16, padding = 24 }, {
     frameNode,
     caption(current, enabled),
@@ -427,6 +638,8 @@ function onOpen(_context)
   state.view = "photo"
   state.hiddenList = nil
   state.hoverHide = false
+  generationCounter = generationCounter + 1
+  state.edit = nil
   resetFade()
   refresh()
 end
@@ -439,6 +652,11 @@ local keyActions = {
 
 function onKey(chord, pressed)
   if not pressed then return end
+  if chord == "a" then
+    toggleEdit()
+    return
+  end
+  if state.edit then return end
   if chord == "shift+question" or chord == "F1" then
     toggleHelp()
   elseif chord == "shift+x" then
@@ -451,3 +669,5 @@ function onKey(chord, pressed)
     startAction(keyActions[chord])
   end
 end
+
+if _G.WALI_TEST then _G.__wali_state = state end

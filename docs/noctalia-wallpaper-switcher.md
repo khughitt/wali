@@ -62,8 +62,8 @@ walictl variant reset [<id>]                # drop the recipe and its renders
 selects the earlier/later photo by capture time. `f` or Space toggles
 favorite, `x` hides (or restores) the photo, `shift+x` opens the hidden list,
 `e` edits, `y` copies the source path (display path if no source exists),
-`r` or a click on the photo samples, `?` or `F1` toggles help, and Escape
-closes the panel.
+`a` toggles edit mode, `r` or a click on the photo samples, `?` or `F1`
+toggles help, and Escape closes the panel.
 
 Without opening the panel, `Super+Alt+Left/Right` runs previous/next,
 `Super+Alt+R` samples, and `Super+Alt+F` toggles favorite. Each reports the photo

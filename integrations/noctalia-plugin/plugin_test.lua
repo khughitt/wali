@@ -192,6 +192,14 @@ noctalia = {
           { id = "gone", added = "T", exists = false },
         } }
       end
+      if text == "variant shown" then
+        return { ok = true, id = "PXL_20260820_000000000", edited = true, variant_path = "/c/v.jpg",
+          recipe = { rotate = 90, brightness = 0, contrast = 0, saturation = 100, hue = 0, blur = 0, noise = 0, bloom = 0, anchor = "top" } }
+      end
+      if text == "variant fresh" then
+        return { ok = true, id = "PXL_20260820_000000000", edited = false, variant_path = nil,
+          recipe = { rotate = 0, brightness = 0, contrast = 0, saturation = 100, hue = 0, blur = 0, noise = 0, bloom = 0, anchor = "center" } }
+      end
       if text == "empty list" then return { ok = true, hidden = {} } end
       return nil, "invalid JSON"
     end,
@@ -223,7 +231,7 @@ panel = {
   setNeedsFrameTick = function(needed) frameTicksWanted = needed end,
 }
 ui = {}
-for _, name in ipairs({ "box", "button", "column", "glyph", "image", "label", "row", "scroll", "spacer" }) do
+for _, name in ipairs({ "box", "button", "column", "glyph", "image", "label", "row", "scroll", "slider", "spacer" }) do
   local nodeType = name
   ui[nodeType] = function(props, children)
     return { type = nodeType, props = props or {}, children = children or {} }
@@ -236,6 +244,7 @@ require = function(path)
   if path == "./shell.luau" then return dofile(here .. "shell.luau") end
   return realRequire(path)
 end
+WALI_TEST = true
 dofile(here .. "panel.luau")
 require = realRequire
 
@@ -616,5 +625,102 @@ end
 assert(sawError, "a failed list load must show the error")
 assert(not sawEmpty, "a failed list load must not claim nothing is hidden")
 onKey("shift+x", true)
+
+-- edit mode: enter, seed, preview on change, coalesce, apply
+onOpen({})
+runs[#runs].callback(success("with source"))
+local adjust = assert(button(rendered, "adjust"), "adjust button missing")
+adjust.props.onClick()
+equal(runs[#runs].command, Shell.command(Logic.variantCommand("show", "PXL_20260820_000000000")))
+runs[#runs].callback(success("variant shown"))
+local function slider(node, key)
+  if node.type == "slider" and node.props.key == key then return node end
+  for _, child in ipairs(node.children) do
+    local found = slider(child, key)
+    if found then return found end
+  end
+  return nil
+end
+assert(find(rendered, "scroll"), "edit mode needs a scrolling control column")
+equal(find(rendered, "image").props.height, 200)
+equal(assert(slider(rendered, "slider:saturation")).props.value, 100)
+equal(assert(button(rendered, "rotate:90")).props.selected, true)
+equal(assert(button(rendered, "anchor:top")).props.selected, true)
+assert(assert(button(rendered, "reset")).props.enabled, "reset is enabled for an edited photo")
+assert(button(rendered, "previous") == nil, "navigation is hidden in edit mode")
+
+slider(rendered, "slider:brightness").props.onDragEnd(20)
+equal(runs[#runs].command, Shell.command(Logic.variantCommand("preview", "PXL_20260820_000000000",
+  { rotate = 90, brightness = 20, anchor = "top" })))
+assert(slider(rendered, "slider:blur").props.enabled, "sliders must stay enabled during a preview")
+assert(button(rendered, "rotate:180").props.enabled, "toggles must stay enabled during a preview")
+assert(not button(rendered, "apply").props.enabled, "apply waits for the preview")
+assert(not button(rendered, "reset").props.enabled, "reset waits for the preview")
+slider(rendered, "slider:blur").props.onDragEnd(3)
+assert(button(rendered, "rotate:180")).props.onClick()
+local previewRuns = #runs
+runs[#runs].callback(success("/cache/preview/a.jpg\n"))
+equal(find(rendered, "image").props.path, "/cache/preview/a.jpg")
+equal(#runs, previewRuns + 1, "pending changes send exactly one follow-up preview")
+equal(runs[#runs].command, Shell.command(Logic.variantCommand("preview", "PXL_20260820_000000000",
+  { rotate = 180, brightness = 20, blur = 3, anchor = "top" })))
+runs[#runs].callback(success("/cache/preview/b.jpg\n"))
+equal(find(rendered, "image").props.path, "/cache/preview/b.jpg")
+
+slider(rendered, "slider:noise").props.onDragEnd(10)
+runs[#runs].callback({ exitCode = 1, stdout = "", stderr = "magick failed: boom", timedOut = false })
+equal(find(rendered, "image").props.path, "/cache/preview/b.jpg")
+local sawError = false
+for _, text in ipairs(labels(rendered)) do if text == "magick failed: boom" then sawError = true end end
+assert(sawError)
+
+assert(button(rendered, "apply").props.enabled, "apply is enabled when idle")
+assert(button(rendered, "apply")).props.onClick()
+equal(runs[#runs].command, Shell.command(Logic.variantCommand("apply", "PXL_20260820_000000000",
+  { rotate = 180, brightness = 20, blur = 3, noise = 10, anchor = "top" })))
+assert(not slider(rendered, "slider:blur").props.enabled, "controls are disabled while apply runs")
+assert(button(rendered, "cancel").props.enabled, "cancel is always available")
+runs[#runs].callback(success("applied PXL_20260820_000000000"))
+equal(runs[#runs].command, Shell.command(commands.current))
+runs[#runs].callback(success("with source"))
+assert(find(rendered, "scroll") == nil, "apply leaves edit mode")
+assert(button(rendered, "previous"), "navigation returns")
+
+onKey("a", true)
+assert(not slider(rendered, "slider:contrast").props.enabled, "controls are disabled until the draft is seeded")
+runs[#runs].callback(success("variant fresh"))
+assert(slider(rendered, "slider:contrast").props.enabled)
+assert(not assert(button(rendered, "reset")).props.enabled, "reset is disabled without a recipe")
+slider(rendered, "slider:contrast").props.onDragEnd(5)
+local late = runs[#runs]
+assert(button(rendered, "cancel")).props.onClick()
+assert(find(rendered, "scroll") == nil, "cancel leaves edit mode")
+late.callback(success("/cache/preview/late.jpg\n"))
+equal(find(rendered, "image").props.path, "/wall/current.jpg", "a late preview must not paint the frame")
+
+onKey("a", true)
+runs[#runs].callback(success("variant shown"))
+__wali_state.current = { ok = true, id = "OTHER", path = "/wall/other.jpg", favorite = false, hidden = false,
+  history = { cursor = 0, length = 1 } }
+slider(rendered, "slider:contrast").props.onDragEnd(5)
+equal(runs[#runs].command, Shell.command(Logic.variantCommand("preview", "PXL_20260820_000000000",
+  { rotate = 90, contrast = 5, anchor = "top" })))
+runs[#runs].callback(success("/cache/preview/c.jpg\n"))
+assert(button(rendered, "reset").props.enabled, "reset is enabled for an edited photo when idle")
+assert(button(rendered, "reset")).props.onClick()
+equal(runs[#runs].command, Shell.command(Logic.variantCommand("reset", "PXL_20260820_000000000")))
+runs[#runs].callback(success("reset PXL_20260820_000000000"))
+equal(runs[#runs].command, Shell.command(commands.current))
+runs[#runs].callback(success("with source"))
+assert(find(rendered, "scroll") == nil)
+
+onKey("a", true)
+runs[#runs].callback(success("variant fresh"))
+local navRuns = #runs
+for _, chord in ipairs({ "h", "l", "j", "k", "r", "f", "x", "shift+x" }) do onKey(chord, true) end
+equal(#runs, navRuns, "edit mode must ignore navigation keys")
+assert(find(rendered, "scroll"), "edit mode must survive navigation keys")
+onKey("a", true)
+assert(find(rendered, "scroll") == nil, "a toggles edit mode off")
 
 print("Wali plugin tests passed")
