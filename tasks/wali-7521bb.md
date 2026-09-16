@@ -1,13 +1,15 @@
 ---
 id: wali-7521bb
 title: Vendor keys.toml and add the panel key conformance test
-status: todo
+status: doing
 priority: 2
 size: s
 complexity: low
 process: direct
+owner: main
 created: 2026-09-16T09:36:27Z
-updated: 2026-09-16T09:36:27Z
+updated: 2026-09-16T10:39:58Z
+started: 2026-09-16T10:39:58Z
 depends: []
 tags: [keyboard, cross-project]
 agent: claude-code/claude-fable-5-1
