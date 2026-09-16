@@ -370,15 +370,16 @@ end
 
 function onFrameTick(deltaMs)
   if not fade.active then return end
+  local delta = tonumber(deltaMs) or 0
   if fade.phase == "out" then
-    fade.alpha = math.max(0, fade.alpha - deltaMs / fadeMs)
+    fade.alpha = math.max(0, fade.alpha - delta / fadeMs)
     if fade.alpha == 0 then
       fade.swap()
       fade.swap = nil
       fade.phase = "in"
     end
   else
-    fade.alpha = math.min(1, fade.alpha + deltaMs / fadeMs)
+    fade.alpha = math.min(1, fade.alpha + delta / fadeMs)
     if fade.alpha == 1 then
       fade.active = false
       fade.phase = nil
@@ -527,7 +528,10 @@ local function sliderRow(spec, enabled)
     ui.label({ text = spec.label, fontSize = 12, width = 78 }),
     ui.slider({ key = "slider:" .. spec.key, min = spec.min, max = spec.max, step = 1, value = value,
       controlSize = "sm", flexGrow = 1, enabled = enabled,
-      onDragEnd = function(newValue) setRecipeValue(spec.key, math.floor(newValue + 0.5)) end }),
+      onDragEnd = function(newValue)
+        local numeric = tonumber(newValue)
+        if numeric ~= nil then setRecipeValue(spec.key, math.floor(numeric + 0.5)) end
+      end }),
     ui.label({ text = tostring(value), fontSize = 11, fontFamily = "monospace", width = 36, textAlign = "end" }),
   })
 end
