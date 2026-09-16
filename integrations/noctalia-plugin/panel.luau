@@ -311,6 +311,7 @@ end
 
 local function finishVariantChange(action, result)
   state.busy = false
+  if state.edit then state.edit.action = nil end
   local message = resultError(result, "walictl variant " .. action)
   if message then
     state.errorText = message
@@ -326,6 +327,7 @@ end
 local function applyEdit()
   if state.edit == nil or not state.edit.seeded or not Logic.canStart(state.busy) then return end
   state.busy = true
+  state.edit.action = "apply"
   render()
   local recipe = editRecipe()
   local launched = run(Logic.variantCommand("apply", state.edit.id, recipe), function(result)
@@ -341,6 +343,7 @@ end
 local function resetEdit()
   if state.edit == nil or not state.edit.seeded or not Logic.canStart(state.busy) then return end
   state.busy = true
+  state.edit.action = "reset"
   render()
   local launched = run(Logic.variantCommand("reset", state.edit.id), function(result)
     finishVariantChange("reset", result)
@@ -352,7 +355,6 @@ local function resetEdit()
   end
 end
 
-local frameHeight = 304
 local editFrameHeight = 200
 local fadeMs = 120
 
@@ -465,7 +467,7 @@ local function helpView()
     { "esc", "Close the panel" },
   })
   return ui.column({
-    height = frameHeight, padding = 18, gap = 10, radius = 14,
+    flexGrow = 1, padding = 18, gap = 10, radius = 14,
     fill = "surface_variant", border = "outline/0.5", borderWidth = 1,
   }, {
     ui.label({ text = "Keyboard shortcuts", fontSize = 20, fontWeight = "semibold" }),
@@ -495,7 +497,7 @@ local function hiddenView(enabled)
     for _, item in ipairs(state.hiddenList) do items[#items + 1] = hiddenRow(item, enabled) end
     rows[#rows + 1] = ui.scroll({ flexGrow = 1, gap = 6 }, items)
   end
-  return ui.column({ height = frameHeight, padding = 20, gap = 8, radius = 14, fill = "surface_variant" }, rows)
+  return ui.column({ flexGrow = 1, padding = 20, gap = 8, radius = 14, fill = "surface_variant" }, rows)
 end
 
 local function frame(enabled)
@@ -509,13 +511,13 @@ local function frame(enabled)
   if state.view == "help" then return helpView() end
   if state.current then
     return ui.image({
-      path = state.current.path, height = frameHeight, radius = 14, fit = "contain",
+      path = state.current.path, flexGrow = 1, radius = 14, fit = "contain",
       border = "outline/0.5", borderWidth = 1,
       onClick = function() startAction("random") end,
     })
   end
   return ui.column({
-    height = frameHeight, radius = 14, fill = "surface_variant",
+    flexGrow = 1, radius = 14, fill = "surface_variant",
     border = "outline/0.5", borderWidth = 1, align = "center", justify = "center",
   }, {
     ui.glyph({ name = state.loading and "loader" or "wallpaper", size = 48, color = "on_surface_variant/0.6" }),
@@ -631,10 +633,18 @@ render = function()
   local frameNode = frame(enabled)
   if fade.alpha < 1 then frameNode.props.opacity = fade.alpha end
   if state.edit and current then
+    local detail = Logic.captionDetail(current, state.errorText)
+    if state.edit.action ~= nil then
+      detail = {
+        text = state.edit.action == "apply"
+          and "Applying the recipe… (a full-size render can take a while)" or "Resetting…",
+        color = "on_surface_variant",
+      }
+    end
     panel.render(ui.column({ flexGrow = 1, gap = 12, padding = 24 }, {
       frameNode,
-      ui.label({ text = Logic.captionDetail(current, state.errorText).text, fontSize = 12, fontFamily = "monospace",
-        color = Logic.captionDetail(current, state.errorText).color, maxLines = 2 }),
+      ui.label({ text = detail.text, fontSize = 12, fontFamily = "monospace",
+        color = detail.color, maxLines = 2 }),
       editControls(),
     }))
     return

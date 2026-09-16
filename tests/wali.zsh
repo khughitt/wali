@@ -135,7 +135,7 @@ assert wali["plugin_api"] <= 28
 assert wali["dependencies"] == ["walictl"]
 assert wali["widget"] == [{"id": "widget", "entry": "widget.luau"}]
 assert wali["panel"] == [{
-    "id": "panel", "entry": "panel.luau", "width": 588, "height": 520,
+    "id": "panel", "entry": "panel.luau", "width": 588, "height": 680,
     "placement": "attached", "position": "auto",
     "keyboard_focus": "exclusive",
     "capture_keys": ["h", "Left", "l", "Right", "k", "Up", "j", "Down", "r", "f", "space", "e", "y", "a", "x", "shift+x", "shift+question", "F1"],

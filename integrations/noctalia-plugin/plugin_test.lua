@@ -687,6 +687,9 @@ equal(runs[#runs].command, Shell.command(Logic.variantCommand("apply", "PXL_2026
   { rotate = 180, brightness = 20, blur = 3, noise = 10, anchor = "top" })))
 assert(not slider(rendered, "slider:blur").props.enabled, "controls are disabled while apply runs")
 assert(button(rendered, "cancel").props.enabled, "cancel is always available")
+local applying = false
+for _, text in ipairs(labels(rendered)) do if text and text:find("Applying") then applying = true end end
+assert(applying, "apply shows a progress caption while the render runs")
 runs[#runs].callback(success("applied PXL_20260820_000000000"))
 equal(runs[#runs].command, Shell.command(commands.current))
 runs[#runs].callback(success("with source"))
