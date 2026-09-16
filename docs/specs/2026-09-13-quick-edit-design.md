@@ -145,7 +145,9 @@ walictl variant reset [<id>]                  # remove the recipe and cache, re-
   file first and is renamed into place only on success, so a failed render
   can never be mistaken for a reusable preview, and rendering and pruning
   share `variants.lock`. The preview pipeline is rotate → resize to
-  560 px wide → tone → blur, noise, bloom → crop, so the resize happens
+  560 px wide → tone → blur, bloom, noise → crop (noise last: a blur
+  reading `+noise` output leaves black blocks at preview scale), so
+  the resize happens
   early enough to keep a slider round trip fast and late enough that the
   scale factor is known: factor = 560 / rotated source width, where the
   rotated width is the source width for 0/180 and the source height for

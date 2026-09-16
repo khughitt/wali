@@ -555,14 +555,16 @@ def magick_argv(
         argv += ["-modulate", f"100,{saturation},{_num(100 + hue / 1.8)}"]
     if values["blur"]:
         argv += ["-blur", f"0x{_num(int(values['blur']) * scale)}"]
-    if values["noise"]:
-        argv += ["-attenuate", _num(int(values["noise"]) / 100 * scale), "+noise", "Gaussian"]
     if values["bloom"]:
         argv += [
             "(", "+clone", "-blur", f"0x{_num(BLOOM_RADIUS * scale)}",
             "-evaluate", "multiply", _num(int(values["bloom"]) / 100), ")",
             "-compose", "screen", "-composite",
         ]
+    # Noise goes last among the pixel ops: a blur reading +noise output leaves
+    # black blocks at preview scale (magick cache quirk), and grain belongs on top.
+    if values["noise"]:
+        argv += ["-attenuate", _num(int(values["noise"]) / 100 * scale), "+noise", "Gaussian"]
     crop = output is not None and (anchor != "center" or preview_width is not None)
     if crop:
         assert output is not None

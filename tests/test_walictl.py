@@ -472,8 +472,9 @@ def test_magick_argv_per_key(walictl: ModuleType, env: dict[str, Path], fake_mag
         "-rotate", "90", "-crop", "1935x810+0+0", "+repage",
     ] + tail
     assert argv(src, {"rotate": 180, "blur": 2, "bloom": 10, "noise": 10, "saturation": 50, "anchor": "bottom"}, (3440, 1440), dst, None) == base + [
-        "-rotate", "180", "-modulate", "100,50,100", "-blur", "0x2", "-attenuate", "0.1", "+noise", "Gaussian",
+        "-rotate", "180", "-modulate", "100,50,100", "-blur", "0x2",
         "(", "+clone", "-blur", "0x25", "-evaluate", "multiply", "0.1", ")", "-compose", "screen", "-composite",
+        "-attenuate", "0.1", "+noise", "Gaussian",
         "-crop", "3440x1440+0+495", "+repage",
     ] + tail
 
@@ -484,8 +485,8 @@ def test_magick_argv_preview_scales_pixel_units_and_crops(walictl: ModuleType, e
     got = argv(src, {"blur": 10, "noise": 50, "bloom": 20}, None, dst, 560)
     assert got[:4] == ["magick", "/s.jpg", "-resize", "560x"]
     assert got[4:6] == ["-blur", "0x1.628"]
-    assert got[6:10] == ["-attenuate", "0.0814", "+noise", "Gaussian"]
-    assert got[10:21] == ["(", "+clone", "-blur", "0x4.07", "-evaluate", "multiply", "0.2", ")", "-compose", "screen", "-composite"]
+    assert got[6:17] == ["(", "+clone", "-blur", "0x4.07", "-evaluate", "multiply", "0.2", ")", "-compose", "screen", "-composite"]
+    assert got[17:21] == ["-attenuate", "0.0814", "+noise", "Gaussian"]
     assert got[21:] == ["-quality", "92", "/p.jpg"]
     assert argv(src, {}, (3440, 1440), dst, 560) == ["magick", "/s.jpg", "-resize", "560x", "-crop", "560x234+0+40", "+repage", "-quality", "92", "/p.jpg"]
     got = argv(src, {"rotate": 90, "blur": 10, "anchor": "top"}, (3440, 1440), dst, 560)
