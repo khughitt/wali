@@ -112,6 +112,35 @@ equal(Logic.hideGlyph(true, true), "eye")
 equal(Logic.hideTooltip(false), "Hide (x)")
 equal(Logic.hideTooltip(true), "Restore (x)")
 
+equal(#Logic.sliders, 7)
+equal(Logic.sliders[1], { key = "brightness", label = "Brightness", min = -100, max = 100, default = 0 })
+equal(Logic.sliders[3], { key = "saturation", label = "Saturation", min = 0, max = 200, default = 100 })
+equal(Logic.sliders[5], { key = "blur", label = "Blur", min = 0, max = 20, default = 0 })
+equal(Logic.recipeDefaults, { rotate = 0, brightness = 0, contrast = 0, saturation = 100, hue = 0, blur = 0, noise = 0, bloom = 0, anchor = "center" })
+assert(Logic.isDefaultRecipe(Logic.recipeDefaults))
+assert(not Logic.isDefaultRecipe({ rotate = 90 }))
+equal(Logic.setArguments({ rotate = 90, saturation = 100, brightness = -10, anchor = "top" }), {
+  "--set", "rotate=90", "--set", "brightness=-10", "--set", "anchor=top",
+})
+equal(Logic.setArguments({}), {})
+equal(Logic.variantCommand("show", "PXL_1"), { "walictl", "variant", "show", "PXL_1", "--json" })
+equal(Logic.variantCommand("preview", "PXL_1", { blur = 2 }), { "walictl", "variant", "preview", "PXL_1", "--set", "blur=2" })
+equal(Logic.variantCommand("apply", "PXL_1", { rotate = 180, hue = 0 }), { "walictl", "variant", "apply", "PXL_1", "--set", "rotate=180" })
+equal(Logic.variantCommand("reset", "PXL_1"), { "walictl", "variant", "reset", "PXL_1" })
+
+local shown = { ok = true, id = "PXL_1", edited = true, variant_path = "/c/PXL_1.jpg",
+  recipe = { rotate = 90, brightness = 0, contrast = 0, saturation = 100, hue = 0, blur = 0, noise = 0, bloom = 0, anchor = "top" } }
+equal(Logic.decodeVariant("shown", function() return shown end), shown)
+local badVariant, badVariantError = Logic.decodeVariant("x", function() return { ok = true, id = "PXL_1", edited = false, recipe = { rotate = "90" } } end)
+assert(badVariant == nil and badVariantError:find("rotate", 1, true))
+badVariant, badVariantError = Logic.decodeVariant("x", function() return { ok = true, id = "PXL_1", edited = false, recipe = { rotate = 0 } } end)
+assert(badVariant == nil and badVariantError:find("brightness", 1, true), "every recipe key is required")
+badVariant, badVariantError = Logic.decodeVariant("x", function() return { ok = false } end)
+assert(badVariant == nil and badVariantError:find("failure", 1, true))
+equal(Logic.previewPath("/cache/wali/preview/PXL_1.abcd1234.jpg\n"), "/cache/wali/preview/PXL_1.abcd1234.jpg")
+local noPath, noPathError = Logic.previewPath("  \n")
+assert(noPath == nil and noPathError:find("path", 1, true))
+
 local hiddenItems = {
   { id = "PXL_20260101_000000000", added = "T", date = "2026-01-01", display_date = "January 1, 2026",
     path = "/wall/a.jpg", source_path = nil, exists = true },

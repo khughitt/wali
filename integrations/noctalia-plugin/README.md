@@ -27,6 +27,7 @@ In niri, `Super+N` toggles the panel and gives it keyboard focus immediately.
 | `x` | Hide the photo (never sampled again); restore it when it is already hidden |
 | `shift+x` | Toggle the hidden list in the preview area |
 | `e` | Edit in GIMP |
+| `a` | Toggle edit mode (adjustments) |
 | `y` | Copy source path, or display path if unavailable |
 | `?` / `F1` | Toggle shortcut help in the preview area |
 | Escape | Close panel |
