@@ -528,9 +528,17 @@ local function sliderRow(spec, enabled)
     ui.label({ text = spec.label, fontSize = 12, width = 78 }),
     ui.slider({ key = "slider:" .. spec.key, min = spec.min, max = spec.max, step = 1, value = value,
       controlSize = "sm", flexGrow = 1, enabled = enabled,
-      onDragEnd = function(newValue)
+      -- onChange streams the value (as a string) during the drag; onDragEnd
+      -- carries no value, it only marks the gesture's end, so the preview
+      -- request waits for it.
+      onChange = function(newValue)
         local numeric = tonumber(newValue)
-        if numeric ~= nil then setRecipeValue(spec.key, math.floor(numeric + 0.5)) end
+        if numeric ~= nil and state.edit and state.edit.seeded then
+          state.edit.recipe[spec.key] = math.floor(numeric + 0.5)
+        end
+      end,
+      onDragEnd = function()
+        if state.edit and state.edit.seeded then requestPreview() end
       end }),
     ui.label({ text = tostring(value), fontSize = 11, fontFamily = "monospace", width = 36, textAlign = "end" }),
   })
