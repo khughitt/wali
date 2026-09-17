@@ -23,8 +23,8 @@ local function resultError(result, label)
   return nil
 end
 
-local function run(argv, callback)
-  return noctalia.runAsync(Shell.command(argv), callback, 10000)
+local function run(argv, callback, timeout)
+  return noctalia.runAsync(Shell.command(argv), callback, timeout or 10000)
 end
 
 local function finishCurrent(result)
@@ -332,7 +332,7 @@ local function applyEdit()
   local recipe = editRecipe()
   local launched = run(Logic.variantCommand("apply", state.edit.id, recipe), function(result)
     finishVariantChange("apply", result)
-  end)
+  end, 30000)
   if not launched then
     state.busy = false
     state.errorText = "Failed to launch walictl variant apply"
@@ -643,7 +643,11 @@ render = function()
     end
     panel.render(ui.column({ flexGrow = 1, gap = 12, padding = 24 }, {
       frameNode,
-      ui.label({ text = detail.text, fontSize = 12, fontFamily = "monospace",
+      state.edit.action ~= nil and ui.row({ align = "center", gap = 8 }, {
+        ui.glyph({ name = "loader", size = 16, color = "on_surface_variant/0.6" }),
+        ui.label({ text = detail.text, fontSize = 12, fontFamily = "monospace",
+          color = detail.color, maxLines = 2 }),
+      }) or ui.label({ text = detail.text, fontSize = 12, fontFamily = "monospace",
         color = detail.color, maxLines = 2 }),
       editControls(),
     }))
