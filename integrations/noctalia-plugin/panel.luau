@@ -537,6 +537,7 @@ local function sliderRow(spec, enabled)
         local numeric = tonumber(newValue)
         if numeric ~= nil and state.edit and state.edit.seeded then
           state.edit.recipe[spec.key] = math.floor(numeric + 0.5)
+          render()
         end
       end,
       onDragEnd = function()

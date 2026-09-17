@@ -8,7 +8,7 @@ complexity: low
 process: planned
 owner: quick-edit-recipes
 created: 2026-09-13T17:59:09Z
-updated: 2026-09-17T14:21:52Z
+updated: 2026-09-17T15:47:56Z
 started: 2026-09-16T00:53:42Z
 depends: [wali-8c3853, wali-4a1724]
 parent: wali-608311
@@ -26,3 +26,6 @@ step: "Task 9: Host config and manual verification"
 - 2026-09-17T14:18:37Z (quick-edit-recipes): Confirmed Apply is killed by the panel-wide 10s deadline; full ImageMagick renders take up to 22s. Adding an Apply-only 30s deadline and native loader feedback.
 - 2026-09-17T14:18:51Z (quick-edit-recipes): User approved the bounded regression fix: Apply-only 30s panel deadline plus the native loader during Apply.
 - 2026-09-17T14:21:52Z (quick-edit-recipes): parked (waiting on user, review): Open Quick Edit, make a multi-adjustment recipe, and confirm Apply shows a loader and completes within 30 seconds.
+- 2026-09-17T15:45:19Z (quick-edit-recipes): Manual verification found two follow-ups: noise is not visibly effective, and slider numeric values need immediate display updates while Apply waits for drag release.
+- 2026-09-17T15:47:56Z (quick-edit-recipes): Fixed preview-noise attenuation (noise strength no longer scales with preview dimensions) and immediate slider value redraw; preview still begins only on drag release. Full verification and focused review passed.
+- 2026-09-17T15:47:56Z (quick-edit-recipes): parked (waiting on user, review): In Quick Edit, set Noise to a high value and confirm the preview visibly gains grain; drag a slider and confirm its number tracks immediately while the preview changes on release.

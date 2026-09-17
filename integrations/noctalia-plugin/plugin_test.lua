@@ -651,7 +651,10 @@ assert(assert(button(rendered, "reset")).props.enabled, "reset is enabled for an
 assert(button(rendered, "previous") == nil, "navigation is hidden in edit mode")
 
 local node = slider(rendered, "slider:brightness")
+local runsBeforeChange = #runs
 node.props.onChange("20")
+equal(#runs, runsBeforeChange, "changing a slider waits for drag release before previewing")
+equal(assert(slider(rendered, "slider:brightness")).props.value, 20, "changing a slider redraws its value immediately")
 node.props.onDragEnd("")
 equal(runs[#runs].command, Shell.command(Logic.variantCommand("preview", "PXL_20260820_000000000",
   { rotate = 90, brightness = 20, anchor = "top" })))

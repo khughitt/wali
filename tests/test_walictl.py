@@ -486,7 +486,7 @@ def test_magick_argv_preview_scales_pixel_units_and_crops(walictl: ModuleType, e
     assert got[:4] == ["magick", "/s.jpg", "-resize", "560x"]
     assert got[4:6] == ["-blur", "0x1.628"]
     assert got[6:17] == ["(", "+clone", "-blur", "0x4.07", "-evaluate", "multiply", "0.2", ")", "-compose", "screen", "-composite"]
-    assert got[17:21] == ["-attenuate", "0.0814", "+noise", "Gaussian"]
+    assert got[17:21] == ["-attenuate", "0.5", "+noise", "Gaussian"]
     assert got[21:] == ["-quality", "92", "/p.jpg"]
     assert argv(src, {}, (3440, 1440), dst, 560) == ["magick", "/s.jpg", "-resize", "560x", "-crop", "560x234+0+40", "+repage", "-quality", "92", "/p.jpg"]
     got = argv(src, {"rotate": 90, "blur": 10, "anchor": "top"}, (3440, 1440), dst, 560)

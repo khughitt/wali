@@ -564,7 +564,7 @@ def magick_argv(
     # Noise goes last among the pixel ops: a blur reading +noise output leaves
     # black blocks at preview scale (magick cache quirk), and grain belongs on top.
     if values["noise"]:
-        argv += ["-attenuate", _num(int(values["noise"]) / 100 * scale), "+noise", "Gaussian"]
+        argv += ["-attenuate", _num(int(values["noise"]) / 100), "+noise", "Gaussian"]
     crop = output is not None and (anchor != "center" or preview_width is not None)
     if crop:
         assert output is not None
