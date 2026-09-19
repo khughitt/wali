@@ -43,3 +43,5 @@ Settle transport (Dropbox folder mirror vs. rsync to Termux over the tailnet), c
 - 2026-09-19T12:48:16Z (phone-sync): resumed
   provenance: {"harness_session":"claude-code:fa1ebf0a-db9b-4904-8ab3-9cdbaae58690","harness_session_source":"CLAUDE_CODE_SESSION_ID"}
 - 2026-09-19T12:48:16Z (phone-sync): plan review round 1: 5 findings taken — Task 6 no longer touches ~/bin/walictl (it and dotfiles bin/walictl are the quick-edit review shim today) and enables the timer only after the serving checkout has phone; dotfiles excluded from both scans; temporaries are <id>.jpg.tmp written as jpg:<path> so no id can collide; dry-run validates dir type; manifest load also survives invalid UTF-8. Spec updated to match
+- 2026-09-19T12:48:16Z (phone-sync): parked (waiting on user, review): re-review the revised plan; on approval execute Tasks 1-5 in .worktrees/phone-sync
+  provenance: {"harness_session":"claude-code:fa1ebf0a-db9b-4904-8ab3-9cdbaae58690","harness_session_source":"CLAUDE_CODE_SESSION_ID"}
