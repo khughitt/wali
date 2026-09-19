@@ -117,9 +117,12 @@ run. `--dry-run` reports the plan and changes nothing.
 every host; enable the timer on titan only:
 `systemctl --user enable --now wali-phone-sync.timer`.
 
-On the phone: Dropsync mirrors the Dropbox folder to local storage (method
-*download mirror*, so deletions propagate; exclude `*.jpg.tmp`), and Muzei's
-*My Photos* source rotates through the local folder with its dim and blur
-effects set to 0 — the renders are already the wallpaper.
+On the phone: Dropsync mirrors the Dropbox folder to a local one such as
+`Pictures/amalthea` (method *download mirror*, so deletions propagate; keep
+hidden files included so `.nomedia` comes along — Dropsync cannot exclude by
+pattern, and a `*.jpg.tmp` caught mid-render is deleted on the next pass).
+Muzei's *My Photos* source, given that folder with *Add a folder*, rotates
+through it with its blur, dim, and grey effects at 0 — the renders are
+already the wallpaper.
 
 Design: `docs/specs/2026-09-07-wallpaper-management-redesign-design.md` in the dotfiles repo, where the redesign was done.
