@@ -26,3 +26,5 @@ Settle transport (Dropbox folder mirror vs. rsync to Termux over the tailnet), c
 - 2026-09-19T12:13:30Z (main): started
   provenance: {"harness_session":"claude-code:fa1ebf0a-db9b-4904-8ab3-9cdbaae58690","harness_session_source":"CLAUDE_CODE_SESSION_ID"}
 - 2026-09-19T12:16:19Z (phone-sync): design drafted at docs/specs/2026-09-19-phone-sync-design.md (untracked by policy: git info/exclude); waiting on user review before the plan
+- 2026-09-19T12:16:19Z (phone-sync): parked (waiting on user, review): review the design spec; on approval, invoke writing-plans for the implementation plan
+  provenance: {"harness_session":"claude-code:fa1ebf0a-db9b-4904-8ab3-9cdbaae58690","harness_session_source":"CLAUDE_CODE_SESSION_ID"}
