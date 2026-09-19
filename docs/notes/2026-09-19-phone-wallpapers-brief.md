@@ -106,9 +106,11 @@ timer on titan beside `wali-rotate.timer`.
    to on-device storage (download-mirror mode propagates deletes), and the
    wallpaper app reads that local folder. Transport is settled: Dropbox folder
    mirror written by walictl on titan.
-3. Is center crop or fit-with-blur acceptable for most favorites, or is a
-   per-photo anchor needed from the start? Research `wali-0b4022`
-   renders a sample both ways for the user to judge.
+3. *Answered 2026-09-19 (wali-0b4022):* center crop. On a 20-favorite sample
+   it read well — most favorites are close-ups where any vertical slice is a
+   whole picture; fit-with-blur left the photo as a ~30% strip. A per-photo
+   horizontal anchor is a later opt-in for the landscape minority, not a
+   first-pass requirement.
 4. Should hidden photos and photos whose recipe rotates them be handled
    specially (rotate before cropping)? Falls out of the design once 3 is
    answered.
