@@ -10,6 +10,7 @@ import math
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -419,6 +420,56 @@ def phone_render(source: Path, target: Path, output: tuple[int, int]) -> None:
         tmp.unlink(missing_ok=True)
         raise WalictlError(f"magick failed: {result.stderr.strip()}")
     os.replace(tmp, target)
+
+
+@dataclass
+class PhonePlan:
+    render: list[tuple[str, Path]]
+    remove: list[str]
+    kept: list[str]
+    skipped: list[str]
+
+
+def _owned(path: Path, suffix: str) -> bool:
+    """An entry walictl manages: a regular, non-dotfile file with the given suffix."""
+    return path.is_file() and not path.name.startswith(".") and path.name.endswith(suffix)
+
+
+def phone_renders(directory: Path) -> dict[str, Path]:
+    """The renders in the mirrored folder: every non-dotfile *.jpg."""
+    if not directory.exists():
+        return {}
+    if not directory.is_dir():
+        raise WalictlError(f"phone.dir is not a directory: {directory}")
+    return {path.stem: path for path in directory.iterdir() if _owned(path, ".jpg")}
+
+
+def phone_plan(
+    config: Config, phone: PhoneConfig, ratings: Ratings, manifest: PhoneManifest, library: dict[str, Path], *, force: bool
+) -> PhonePlan:
+    existing = phone_renders(phone.dir)
+    wanted = [check_photo_id(photo, "favorite id") for photo in ratings.favorite_ids()]
+    plan = PhonePlan(render=[], remove=sorted(set(existing) - set(wanted)), kept=[], skipped=[])
+    for photo in wanted:
+        source = resolve_source(config, photo) or library.get(photo)
+        if source is None:
+            plan.skipped.append(photo)
+        elif photo in existing and not force and manifest.renders.get(photo) == source_identity(source, phone.output):
+            plan.kept.append(photo)
+        else:
+            plan.render.append((photo, source))
+    return plan
+
+
+def prepare_phone_dir(directory: Path) -> None:
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except (FileExistsError, NotADirectoryError) as exc:
+        raise WalictlError(f"phone.dir is not a directory: {directory}") from exc
+    (directory / ".nomedia").touch(exist_ok=True)
+    for path in directory.iterdir():
+        if _owned(path, PHONE_TMP_SUFFIX):
+            path.unlink()
 
 
 def _identity_entry(value: object) -> dict[str, object] | None:
@@ -923,6 +974,55 @@ def cmd_edit(ctx: Context, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_phone_sync(ctx: Context, args: argparse.Namespace) -> int:
+    if ctx.config.phone is None:
+        raise WalictlError("config table [phone] is required")
+    phone = ctx.config.phone
+    ratings = Ratings.load(ctx.config.favorites_file, required=True)
+    library = scan_library(ctx.config.wallpaper_dir)
+    if phone.dir.exists() and not phone.dir.is_dir():
+        raise WalictlError(f"phone.dir is not a directory: {phone.dir}")
+    if not args.dry_run and shutil.which("magick") is None:
+        raise WalictlError("magick command not found")
+
+    def warn(message: str) -> None:
+        ctx.err.write(f"{message}\n")
+
+    manifest_path = phone_manifest_path()
+    with locked(phone_lock()):
+        if not args.dry_run:
+            prepare_phone_dir(phone.dir)
+        manifest = PhoneManifest.load(manifest_path, warn)
+        plan = phone_plan(ctx.config, phone, ratings, manifest, library, force=args.force)
+        for photo in plan.skipped:
+            warn(f"skipped {photo}: missing from library")
+        if not args.dry_run:
+            for photo in plan.remove:
+                (phone.dir / f"{photo}.jpg").unlink()
+                manifest.renders.pop(photo, None)
+                manifest.save(manifest_path)
+            for photo, source in plan.render:
+                identity = source_identity(source, phone.output)
+                phone_render(source, phone.dir / f"{photo}.jpg", phone.output)
+                manifest.renders[photo] = identity
+                manifest.save(manifest_path)
+    rendered = [photo for photo, _ in plan.render]
+    if args.json:
+        skipped = [{"id": photo, "reason": "missing from library"} for photo in plan.skipped]
+        json.dump({"ok": True, "rendered": rendered, "removed": plan.remove, "kept": len(plan.kept), "skipped": skipped}, ctx.out)
+        ctx.out.write("\n")
+    else:
+        ctx.out.write(f"rendered {len(rendered)}, removed {len(plan.remove)}, kept {len(plan.kept)}, skipped {len(plan.skipped)}\n")
+    return 0
+
+
+PHONE_COMMANDS: dict[str, Callable[[Context, argparse.Namespace], int]] = {"sync": cmd_phone_sync}
+
+
+def cmd_phone(ctx: Context, args: argparse.Namespace) -> int:
+    return PHONE_COMMANDS[args.phone_command](ctx, args)
+
+
 COMMANDS: dict[str, Callable[[Context, argparse.Namespace], int]] = {
     "current": cmd_current,
     "edit": cmd_edit,
@@ -938,6 +1038,7 @@ COMMANDS: dict[str, Callable[[Context, argparse.Namespace], int]] = {
     "previous": cmd_previous,
     "random": cmd_random,
     "observe": cmd_observe,
+    "phone": cmd_phone,
     "unhide": cmd_unhide,
 }
 
@@ -981,6 +1082,12 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("earlier", help="previous photo by capture time, discarding forward history")
     subparsers.add_parser("later", help="next photo by capture time, discarding forward history")
     subparsers.add_parser("observe", help="record a wallpaper change made outside walictl (hook entry point)")
+    phone = subparsers.add_parser("phone", help="the phone's mirrored favorites")
+    phone_sub = phone.add_subparsers(dest="phone_command", required=True)
+    sync = phone_sub.add_parser("sync", help="mirror favorites into [phone] dir as phone-sized renders")
+    sync.add_argument("--dry-run", action="store_true", help="report the plan; render and remove nothing")
+    sync.add_argument("--force", action="store_true", help="re-render every favorite")
+    sync.add_argument("--json", action="store_true")
     return parser
 
 
