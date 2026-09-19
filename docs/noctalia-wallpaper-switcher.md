@@ -11,6 +11,7 @@ plugin (`khughitt/wali-panel`) is a view over `walictl current --json`.
 | Display, palette, templates, hooks | Noctalia |
 | Next photo, history, favorites, config | `walictl` |
 | Timed rotation | `systemd/wali-rotate.timer` running `walictl next` |
+| Phone renders of favorites | `systemd/wali-phone-sync.timer` running `walictl phone sync` on titan |
 | Changes made in Noctalia's own panel | `wallpaper_changed` hook running `walictl observe` |
 | Per-wallpaper glass deltas | prism |
 
@@ -27,6 +28,8 @@ verify the exported effective config has wallpaper automation disabled.
 | `$XDG_CONFIG_HOME/wali/config.toml` | Per-host config, linked by dotfiles' setup.sh from its `wali/<hostname>/config.toml` |
 | `<favorites_file>` | Favorites and hidden photos keyed by photo id (version 2), synced with the backgrounds directory |
 | `$XDG_STATE_HOME/wali/history.json` | Per-host history with a cursor |
+| `$XDG_STATE_HOME/wali/phone.json` | Which source each phone render was made from; rebuilt when missing |
+| `<phone.dir>` | The mirrored phone folder under Dropbox; `walictl` owns every `*.jpg` in it |
 | `bin/walictl` | The CLI |
 | `tests/test_walictl.py` | Tests |
 
@@ -48,6 +51,7 @@ walictl neighbors --json    # capture-time neighbours, for mind6; --count must b
 walictl edit                # GIMP on the original, else on the display file
 walictl observe             # hook entry point
 walictl import-favorites <favorites.txt>
+walictl phone sync          # mirror favorites into [phone] dir; --dry-run, --force, --json
 ```
 
 `Super+N` toggles the Wali Panel. Inside it, `h/l` or Left/Right walks history
@@ -86,5 +90,36 @@ visible photo remains or Noctalia rejects the change, the hide stands and the
 command exits 1. Update `walictl` on every host before the first favorite or
 hide write after this lands: a version 1 `walictl` refuses the version 2
 file.
+
+## Phone
+
+Favorites reach the phone as centre-cropped renders at the phone's size.
+`walictl phone sync` needs a `[phone]` table on the rendering host (titan,
+which has the archive originals):
+
+```toml
+[phone]
+dir = "~/d/linux/backgrounds/amalthea"   # under Dropbox; walictl owns its *.jpg
+output = "1344x2992"                     # the phone's screen
+```
+
+Each run renders favorites that are missing or stale (a new source, a
+changed output size, or `--force`), removes renders of photos that are no
+longer favorites, and leaves everything else in the folder alone. It creates
+an empty `.nomedia` there so the phone's gallery ignores the renders. A
+favorite this host has not received is skipped with a warning. The ratings
+file must exist: a missing file is an error, not an empty set, so a sync can
+never empty the phone by accident. `phone.json` in the state dir records the
+source of each render; a missing or malformed manifest is rebuilt on the next
+run. `--dry-run` reports the plan and changes nothing.
+
+`wali-phone-sync.timer` runs the sync daily. Dotfiles links the units on
+every host; enable the timer on titan only:
+`systemctl --user enable --now wali-phone-sync.timer`.
+
+On the phone: Dropsync mirrors the Dropbox folder to local storage (method
+*download mirror*, so deletions propagate; exclude `*.jpg.tmp`), and Muzei's
+*My Photos* source rotates through the local folder with its dim and blur
+effects set to 0 — the renders are already the wallpaper.
 
 Design: `docs/specs/2026-09-07-wallpaper-management-redesign-design.md` in the dotfiles repo, where the redesign was done.

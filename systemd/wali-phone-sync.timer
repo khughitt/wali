@@ -1,0 +1,11 @@
+[Unit]
+Description=Mirror favorites to the phone daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+AccuracySec=1h
+Unit=wali-phone-sync.service
+
+[Install]
+WantedBy=timers.target
