@@ -41,11 +41,18 @@ class EditsConfig:
 
 
 @dataclass(frozen=True)
+class PhoneConfig:
+    dir: Path
+    output: tuple[int, int]
+
+
+@dataclass(frozen=True)
 class Config:
     wallpaper_dir: Path
     favorites_file: Path
     archive_root: Path | None
     edits: EditsConfig | None
+    phone: PhoneConfig | None
     sampling: Sampling
 
 
@@ -120,6 +127,7 @@ def load_config(path: Path) -> Config:
         favorites_file=_expand(raw["favorites_file"], "favorites_file"),
         archive_root=_expand(raw["archive_root"], "archive_root") if "archive_root" in raw else None,
         edits=load_edits_config(raw),
+        phone=load_phone_config(raw),
         sampling=Sampling(
             exclude_recent=exclude_recent,
             favorite_boost=float(favorite_boost),
@@ -128,10 +136,10 @@ def load_config(path: Path) -> Config:
     )
 
 
-def parse_output(value: object) -> tuple[int, int]:
+def parse_output(value: object, key: str = "edits.output") -> tuple[int, int]:
     match = re.fullmatch(r"(\d+)x(\d+)", value) if isinstance(value, str) else None
     if match is None or int(match[1]) <= 0 or int(match[2]) <= 0:
-        raise WalictlError("config key edits.output must be WIDTHxHEIGHT with positive integers")
+        raise WalictlError(f"config key {key} must be WIDTHxHEIGHT with positive integers")
     return int(match[1]), int(match[2])
 
 
@@ -147,6 +155,18 @@ def load_edits_config(raw: dict[str, object]) -> EditsConfig | None:
         raise WalictlError("config table [edits] must be a table")
     output = parse_output(table["output"]) if "output" in table else None
     return EditsConfig(file=_expand(raw["edits_file"], "edits_file"), output=output)
+
+
+def load_phone_config(raw: dict[str, object]) -> PhoneConfig | None:
+    table = raw.get("phone")
+    if table is None:
+        return None
+    if not isinstance(table, dict):
+        raise WalictlError("config table [phone] must be a table")
+    for key in ("dir", "output"):
+        if key not in table:
+            raise WalictlError(f"config key phone.{key} is required")
+    return PhoneConfig(dir=_expand(table["dir"], "phone.dir"), output=parse_output(table["output"], "phone.output"))
 
 
 # --- photo identity and library --------------------------------------------

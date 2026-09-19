@@ -91,12 +91,21 @@ def run_cli(walictl: ModuleType, argv: list[str]) -> tuple[int, str, str]:
     return code, stdout.getvalue(), stderr.getvalue()
 
 
+def phone_env(env: dict[str, Path], output: str = "90x200") -> Path:
+    """Switch [phone] on for a test; returns the mirrored folder (not created)."""
+    folder = env["wallpapers"].parent / "phone"
+    config = env["config_home"] / "wali" / "config.toml"
+    config.write_text(config.read_text() + f'[phone]\ndir = "{folder}"\noutput = "{output}"\n')
+    return folder
+
+
 def test_load_config_reads_required_and_optional_keys(walictl: ModuleType, env: dict[str, Path]) -> None:
     config = walictl.load_config(walictl.config_path())
     assert config.wallpaper_dir == env["wallpapers"]
     assert config.favorites_file == env["favorites"]
     assert config.archive_root == env["archive"]
     assert config.edits is None
+    assert config.phone is None
     assert config.sampling == walictl.Sampling(exclude_recent=200, favorite_boost=1.0, period_boost=3.0)
 
 
@@ -145,6 +154,38 @@ def test_invalid_edits_config(walictl: ModuleType, env: dict[str, Path], extra: 
     path.write_text(path.read_text() + extra)
     with pytest.raises(walictl.WalictlError, match=re.escape(message)):
         walictl.load_config(path)
+
+
+def test_load_config_reads_phone(walictl: ModuleType, env: dict[str, Path]) -> None:
+    folder = phone_env(env, "1344x2992")
+    config = walictl.load_config(walictl.config_path())
+    assert config.phone == walictl.PhoneConfig(dir=folder, output=(1344, 2992))
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ("phone = 5\n", "config table [phone] must be a table"),
+        ('[phone]\noutput = "1x2"\n', "config key phone.dir is required"),
+        ('[phone]\ndir = "~/p"\n', "config key phone.output is required"),
+        ('[phone]\ndir = ""\noutput = "1x2"\n', "config key phone.dir must be a non-empty string"),
+        ('[phone]\ndir = "~/p"\noutput = "wide"\n', "config key phone.output must be WIDTHxHEIGHT"),
+        ('[phone]\ndir = "~/p"\noutput = "0x2"\n', "config key phone.output must be WIDTHxHEIGHT"),
+    ],
+)
+def test_invalid_phone_config(walictl: ModuleType, env: dict[str, Path], extra: str, message: str) -> None:
+    path = env["config_home"] / "wali" / "config.toml"
+    path.write_text(path.read_text() + extra)
+    with pytest.raises(walictl.WalictlError, match=re.escape(message)):
+        walictl.load_config(path)
+
+
+def test_parse_output_names_its_key(walictl: ModuleType) -> None:
+    assert walictl.parse_output("10x20") == (10, 20)
+    with pytest.raises(walictl.WalictlError, match=re.escape("config key edits.output must be WIDTHxHEIGHT")):
+        walictl.parse_output("x")
+    with pytest.raises(walictl.WalictlError, match=re.escape("config key phone.output must be WIDTHxHEIGHT")):
+        walictl.parse_output("x", "phone.output")
 
 
 def test_load_config_resolves_symlinked_directories(walictl: ModuleType, tmp_path: Path) -> None:
@@ -252,7 +293,7 @@ def test_resolve_variant_and_source(walictl: ModuleType, env: dict[str, Path]) -
     assert walictl.resolve_source(config, "PXL_20210608_111152739") == env["archive"] / "2021" / "06" / "PXL_20210608_111152739.jpg"
     assert walictl.resolve_source(config, "PXL_20210609_120000000") is None
     assert walictl.resolve_source(config, "IMG_1") is None
-    no_archive = walictl.Config(config.wallpaper_dir, config.favorites_file, None, None, config.sampling)
+    no_archive = walictl.Config(config.wallpaper_dir, config.favorites_file, None, None, None, config.sampling)
     assert walictl.resolve_source(no_archive, "PXL_20210608_111152739") is None
 
 
