@@ -99,11 +99,13 @@ timer on titan beside `wali-rotate.timer`.
 
 ## Unanswered questions
 
-1. What should the phone do with the set — rotate automatically (which app:
-   Muzei-style folder source, or another) or offer a gallery to pick from? Only
-   the user can say; it decides whether a folder mirror is enough.
-2. Can the phone's wallpaper source read a Dropbox offline folder, or does it
-   need on-device storage (favouring rsync/Termux)? User, on the phone.
+1. *Answered 2026-09-19:* auto-rotate. Lean: Muzei (free, open source) with its
+   "My Photos" source pointed at the local folder, dim/blur effect off; writing
+   an app is not warranted while that works.
+2. *Answered 2026-09-19:* yes — Dropsync on the phone mirrors the Dropbox folder
+   to on-device storage (download-mirror mode propagates deletes), and the
+   wallpaper app reads that local folder. Transport is settled: Dropbox folder
+   mirror written by walictl on titan.
 3. Is center crop or fit-with-blur acceptable for most favorites, or is a
    per-photo anchor needed from the start? Research `wali-0b4022`
    renders a sample both ways for the user to judge.
