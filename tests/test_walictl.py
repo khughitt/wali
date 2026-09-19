@@ -5,6 +5,7 @@ import importlib.machinery
 import importlib.util
 import io
 import json
+import os
 import re
 import subprocess
 import sys
@@ -186,6 +187,50 @@ def test_parse_output_names_its_key(walictl: ModuleType) -> None:
         walictl.parse_output("x")
     with pytest.raises(walictl.WalictlError, match=re.escape("config key phone.output must be WIDTHxHEIGHT")):
         walictl.parse_output("x", "phone.output")
+
+
+def test_ratings_load_required_fails_on_the_read(walictl: ModuleType, env: dict[str, Path]) -> None:
+    assert walictl.Ratings.load(env["favorites"]).favorites == {}
+    with pytest.raises(walictl.WalictlError, match=re.escape(f"favorites file not found: {env['favorites']}")):
+        walictl.Ratings.load(env["favorites"], required=True)
+    env["favorites"].write_text('{"version": 2, "favorites": {}, "hidden": {}}')
+    assert walictl.Ratings.load(env["favorites"], required=True).favorites == {}
+
+
+def test_phone_paths_live_in_state_dir(walictl: ModuleType, env: dict[str, Path]) -> None:
+    assert walictl.phone_lock() == env["state_home"] / "wali" / "phone.lock"
+    assert walictl.phone_manifest_path() == env["state_home"] / "wali" / "phone.json"
+
+
+def test_source_identity_records_path_size_mtime_and_output(walictl: ModuleType, tmp_path: Path) -> None:
+    source = tmp_path / "s.jpg"
+    source.write_bytes(b"abc")
+    os.utime(source, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_001))
+    assert walictl.source_identity(source, (1344, 2992)) == {
+        "source": str(source), "size": 3, "mtime_ns": 1_700_000_000_000_000_001, "output": "1344x2992",
+    }
+
+
+def test_phone_manifest_round_trip_and_recovery(walictl: ModuleType, tmp_path: Path) -> None:
+    path = tmp_path / "phone.json"
+    warnings: list[str] = []
+    assert walictl.PhoneManifest.load(path, warnings.append).renders == {} and warnings == []
+    entry = {"source": "/a.jpg", "size": 1, "mtime_ns": 2, "output": "1x2"}
+    manifest = walictl.PhoneManifest(renders={"a": entry})
+    manifest.save(path)
+    assert json.loads(path.read_text()) == {"version": 1, "renders": {"a": entry}}
+    assert walictl.PhoneManifest.load(path, warnings.append).renders == {"a": entry} and warnings == []
+    path.write_text("{")
+    assert walictl.PhoneManifest.load(path, warnings.append).renders == {}
+    assert warnings == [f"phone manifest is not valid JSON: {path}; rebuilding"]
+    path.write_text('{"version": 2, "renders": {}}')
+    assert walictl.PhoneManifest.load(path, warnings.append).renders == {}
+    assert warnings[-1] == f"phone manifest is unreadable: {path}; rebuilding"
+    path.write_text(json.dumps({"version": 1, "renders": {"a": entry, "b": {"source": "/b.jpg"}, "c": 5}}))
+    assert walictl.PhoneManifest.load(path, warnings.append).renders == {"a": entry}
+    path.write_bytes(b"\xff\xfe not utf-8")
+    assert walictl.PhoneManifest.load(path, warnings.append).renders == {}
+    assert warnings[-1] == f"phone manifest is unreadable: {path}; rebuilding"
 
 
 def test_load_config_resolves_symlinked_directories(walictl: ModuleType, tmp_path: Path) -> None:
