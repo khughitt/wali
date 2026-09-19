@@ -8,7 +8,7 @@ complexity: high
 process: planned
 owner: phone-sync
 created: 2026-09-19T11:25:22Z
-updated: 2026-09-19T12:30:56Z
+updated: 2026-09-19T12:35:49Z
 started: 2026-09-19T12:13:30Z
 depends: [wali-0b4022]
 parent: wali-51adcc
@@ -33,3 +33,6 @@ Settle transport (Dropbox folder mirror vs. rsync to Termux over the tailnet), c
 - 2026-09-19T12:30:56Z (phone-sync): review round 1: 4 findings taken — ratings file must exist (missing ≠ empty), a state-dir manifest records source identity + output (fallback→original and output changes re-render), dotfiles wiring is an explicit dots piece (per-unit ln_s, titan-only enable), .nomedia created in the Dropbox folder since download mirror deletes device-only files
 - 2026-09-19T12:30:56Z (phone-sync): parked (waiting on user, review): re-review the revised spec; on approval, writing-plans
   provenance: {"harness_session":"claude-code:fa1ebf0a-db9b-4904-8ab3-9cdbaae58690","harness_session_source":"CLAUDE_CODE_SESSION_ID"}
+- 2026-09-19T12:35:49Z (phone-sync): resumed
+  provenance: {"harness_session":"claude-code:fa1ebf0a-db9b-4904-8ab3-9cdbaae58690","harness_session_source":"CLAUDE_CODE_SESSION_ID"}
+- 2026-09-19T12:35:49Z (phone-sync): review round 2: spec approved for planning with two clarifications applied — ratings must fail on the read itself (Ratings.load required=True, no exists() pre-check); manifest guarantee is recovery on mismatch, not atomicity, with interruption tests between the two writes
