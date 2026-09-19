@@ -1,4 +1,5 @@
 set dotenv-load := false
+set quiet
 
 default:
     @just --list
