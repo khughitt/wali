@@ -1,15 +1,16 @@
 ---
 id: wali-8ad74b
 title: Design phone wallpaper sync from the brief
-status: doing
+status: done
 priority: 2
 size: m
 complexity: high
 process: planned
 owner: phone-sync
 created: 2026-09-19T11:25:22Z
-updated: 2026-09-19T13:20:34Z
+updated: 2026-09-19T17:16:05Z
 started: 2026-09-19T12:13:30Z
+completed: 2026-09-19T17:16:05Z
 depends: [wali-0b4022]
 parent: wali-51adcc
 tags: [wallpaper]
@@ -54,3 +55,7 @@ Settle transport (Dropbox folder mirror vs. rsync to Termux over the tailnet), c
   provenance: {"harness_session":"claude-code:f80a968e-fd50-4a48-8930-8977cd5cb9f0","harness_session_source":"CLAUDE_CODE_SESSION_ID"}
 - 2026-09-19T13:06:19Z (phone-sync): plan approved; executing Tasks 1-5 in .worktrees/phone-sync
 - 2026-09-19T13:20:34Z (phone-sync): Tasks 1-5 committed on phone-sync (24332ff..07d3c44); dots-edcbef merged into dotfiles main (94b53b2); first titan sync running via the worktree executable
+- 2026-09-19T17:16:05Z (main): done
+  provenance: {"harness_session":"claude-code:f80a968e-fd50-4a48-8930-8977cd5cb9f0","harness_session_source":"CLAUDE_CODE_SESSION_ID"}
+- 2026-09-19T17:16:05Z (main): design, plan, and six steps landed: walictl phone sync merged (dfb5f2f), timer live on titan
+  provenance: {"harness_session":"claude-code:f80a968e-fd50-4a48-8930-8977cd5cb9f0","harness_session_source":"CLAUDE_CODE_SESSION_ID"}
