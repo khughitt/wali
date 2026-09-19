@@ -4,8 +4,8 @@ title: Favorited wallpapers on the phone
 status: todo
 priority: 2
 created: 2026-09-19T11:25:22Z
-updated: 2026-09-19T12:03:00Z
-depends: []
+updated: 2026-09-19T12:42:18Z
+depends: [dots-edcbef]
 tags: [wallpaper]
 source: docs/notes/2026-09-19-phone-wallpapers-brief.md
 agent: claude-code/claude-opus-5

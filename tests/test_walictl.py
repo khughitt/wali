@@ -5,9 +5,12 @@ import importlib.machinery
 import importlib.util
 import io
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
+from collections.abc import Sequence
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -81,6 +84,44 @@ def noctalia(env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> FakeNocta
     return fake
 
 
+@pytest.fixture
+def magick(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A magick stand-in on PATH: logs argv, writes its last argument, fails when MAGICK_FAIL is set.
+
+    With MAGICK_EXPECT_LOCK set to a lock path it exits 3 unless that lock is held by someone else.
+    Returns the argv log; one line per call.
+    """
+    bin_dir, log = tmp_path / "stub-bin", tmp_path / "magick.log"
+    bin_dir.mkdir()
+    stub = bin_dir / "magick"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import fcntl, os, sys\n"
+        f"with open({str(log)!r}, 'a') as handle:\n"
+        "    handle.write(' '.join(sys.argv[1:]) + '\\n')\n"
+        "lock = os.environ.get('MAGICK_EXPECT_LOCK')\n"
+        "if lock:\n"
+        "    with open(lock, 'a') as handle:\n"
+        "        try:\n"
+        "            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "        except BlockingIOError:\n"
+        "            pass\n"
+        "        else:\n"
+        "            sys.stderr.write('lock not held\\n')\n"
+        "            sys.exit(3)\n"
+        "if os.environ.get('MAGICK_FAIL'):\n"
+        "    sys.stderr.write('magick: boom\\n')\n"
+        "    sys.exit(1)\n"
+        "with open(sys.argv[-1].removeprefix('jpg:'), 'wb') as out:\n"
+        "    out.write(b'render:' + sys.argv[1].encode())\n"
+    )
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    monkeypatch.delenv("MAGICK_FAIL", raising=False)
+    monkeypatch.delenv("MAGICK_EXPECT_LOCK", raising=False)
+    return log
+
+
 def run_cli(walictl: ModuleType, argv: list[str]) -> tuple[int, str, str]:
     stdout, stderr = io.StringIO(), io.StringIO()
     with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -91,12 +132,30 @@ def run_cli(walictl: ModuleType, argv: list[str]) -> tuple[int, str, str]:
     return code, stdout.getvalue(), stderr.getvalue()
 
 
+def phone_env(env: dict[str, Path], output: str = "90x200") -> Path:
+    """Switch [phone] on for a test; returns the mirrored folder (not created)."""
+    folder = env["wallpapers"].parent / "phone"
+    config = env["config_home"] / "wali" / "config.toml"
+    config.write_text(config.read_text() + f'[phone]\ndir = "{folder}"\noutput = "{output}"\n')
+    return folder
+
+
+def write_ratings(env: dict[str, Path], favorites: list[str], hidden: Sequence[str] = ()) -> None:
+    payload = {
+        "version": 2,
+        "favorites": {photo: {"added": "T"} for photo in favorites},
+        "hidden": {photo: {"added": "T"} for photo in hidden},
+    }
+    env["favorites"].write_text(json.dumps(payload))
+
+
 def test_load_config_reads_required_and_optional_keys(walictl: ModuleType, env: dict[str, Path]) -> None:
     config = walictl.load_config(walictl.config_path())
     assert config.wallpaper_dir == env["wallpapers"]
     assert config.favorites_file == env["favorites"]
     assert config.archive_root == env["archive"]
     assert config.edits is None
+    assert config.phone is None
     assert config.sampling == walictl.Sampling(exclude_recent=200, favorite_boost=1.0, period_boost=3.0)
 
 
@@ -145,6 +204,319 @@ def test_invalid_edits_config(walictl: ModuleType, env: dict[str, Path], extra: 
     path.write_text(path.read_text() + extra)
     with pytest.raises(walictl.WalictlError, match=re.escape(message)):
         walictl.load_config(path)
+
+
+def test_load_config_reads_phone(walictl: ModuleType, env: dict[str, Path]) -> None:
+    folder = phone_env(env, "1344x2992")
+    config = walictl.load_config(walictl.config_path())
+    assert config.phone == walictl.PhoneConfig(dir=folder, output=(1344, 2992))
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ("phone = 5\n", "config table [phone] must be a table"),
+        ('[phone]\noutput = "1x2"\n', "config key phone.dir is required"),
+        ('[phone]\ndir = "~/p"\n', "config key phone.output is required"),
+        ('[phone]\ndir = ""\noutput = "1x2"\n', "config key phone.dir must be a non-empty string"),
+        ('[phone]\ndir = "~/p"\noutput = "wide"\n', "config key phone.output must be WIDTHxHEIGHT"),
+        ('[phone]\ndir = "~/p"\noutput = "0x2"\n', "config key phone.output must be WIDTHxHEIGHT"),
+    ],
+)
+def test_invalid_phone_config(walictl: ModuleType, env: dict[str, Path], extra: str, message: str) -> None:
+    path = env["config_home"] / "wali" / "config.toml"
+    path.write_text(path.read_text() + extra)
+    with pytest.raises(walictl.WalictlError, match=re.escape(message)):
+        walictl.load_config(path)
+
+
+def test_parse_output_names_its_key(walictl: ModuleType) -> None:
+    assert walictl.parse_output("10x20") == (10, 20)
+    with pytest.raises(walictl.WalictlError, match=re.escape("config key edits.output must be WIDTHxHEIGHT")):
+        walictl.parse_output("x")
+    with pytest.raises(walictl.WalictlError, match=re.escape("config key phone.output must be WIDTHxHEIGHT")):
+        walictl.parse_output("x", "phone.output")
+
+
+def test_ratings_load_required_fails_on_the_read(walictl: ModuleType, env: dict[str, Path]) -> None:
+    assert walictl.Ratings.load(env["favorites"]).favorites == {}
+    with pytest.raises(walictl.WalictlError, match=re.escape(f"favorites file not found: {env['favorites']}")):
+        walictl.Ratings.load(env["favorites"], required=True)
+    env["favorites"].write_text('{"version": 2, "favorites": {}, "hidden": {}}')
+    assert walictl.Ratings.load(env["favorites"], required=True).favorites == {}
+
+
+def test_phone_paths_live_in_state_dir(walictl: ModuleType, env: dict[str, Path]) -> None:
+    assert walictl.phone_lock() == env["state_home"] / "wali" / "phone.lock"
+    assert walictl.phone_manifest_path() == env["state_home"] / "wali" / "phone.json"
+
+
+def test_source_identity_records_path_size_mtime_and_output(walictl: ModuleType, tmp_path: Path) -> None:
+    source = tmp_path / "s.jpg"
+    source.write_bytes(b"abc")
+    os.utime(source, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_001))
+    assert walictl.source_identity(source, (1344, 2992)) == {
+        "source": str(source), "size": 3, "mtime_ns": 1_700_000_000_000_000_001, "output": "1344x2992",
+    }
+
+
+def test_phone_manifest_round_trip_and_recovery(walictl: ModuleType, tmp_path: Path) -> None:
+    path = tmp_path / "phone.json"
+    warnings: list[str] = []
+    assert walictl.PhoneManifest.load(path, warnings.append).renders == {} and warnings == []
+    entry = {"source": "/a.jpg", "size": 1, "mtime_ns": 2, "output": "1x2"}
+    manifest = walictl.PhoneManifest(renders={"a": entry})
+    manifest.save(path)
+    assert json.loads(path.read_text()) == {"version": 1, "renders": {"a": entry}}
+    assert walictl.PhoneManifest.load(path, warnings.append).renders == {"a": entry} and warnings == []
+    path.write_text("{")
+    assert walictl.PhoneManifest.load(path, warnings.append).renders == {}
+    assert warnings == [f"phone manifest is not valid JSON: {path}; rebuilding"]
+    path.write_text('{"version": 2, "renders": {}}')
+    assert walictl.PhoneManifest.load(path, warnings.append).renders == {}
+    assert warnings[-1] == f"phone manifest is unreadable: {path}; rebuilding"
+    path.write_text(json.dumps({"version": 1, "renders": {"a": entry, "b": {"source": "/b.jpg"}, "c": 5}}))
+    assert walictl.PhoneManifest.load(path, warnings.append).renders == {"a": entry}
+    path.write_bytes(b"\xff\xfe not utf-8")
+    assert walictl.PhoneManifest.load(path, warnings.append).renders == {}
+    assert warnings[-1] == f"phone manifest is unreadable: {path}; rebuilding"
+
+
+def test_phone_render_argv_and_atomic_publish(walictl: ModuleType, tmp_path: Path, magick: Path) -> None:
+    source, target = tmp_path / "src.jpg", tmp_path / "out" / "PXL_1.jpg"
+    source.write_bytes(b"x")
+    target.parent.mkdir()
+    walictl.phone_render(source, target, (90, 200))
+    assert target.read_bytes() == b"render:" + str(source).encode()
+    assert sorted(p.name for p in target.parent.iterdir()) == ["PXL_1.jpg"]
+    assert magick.read_text().splitlines() == [
+        f"{source} -auto-orient -strip -resize 90x200^ -gravity center -extent 90x200 -quality 88 jpg:{target.parent / 'PXL_1.jpg.tmp'}"
+    ]
+
+
+def test_phone_render_failure_removes_the_temporary(
+    walictl: ModuleType, tmp_path: Path, magick: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, target = tmp_path / "src.jpg", tmp_path / "PXL_1.jpg"
+    source.write_bytes(b"x")
+    target.write_bytes(b"previous")
+    monkeypatch.setenv("MAGICK_FAIL", "1")
+    with pytest.raises(walictl.WalictlError, match=re.escape("magick failed: magick: boom")):
+        walictl.phone_render(source, target, (90, 200))
+    assert target.read_bytes() == b"previous"
+    assert not (tmp_path / "PXL_1.jpg.tmp").exists()
+
+
+def test_phone_render_without_magick(walictl: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    source = tmp_path / "src.jpg"
+    source.write_bytes(b"x")
+    with pytest.raises(walictl.WalictlError, match="magick command not found"):
+        walictl.phone_render(source, tmp_path / "PXL_1.jpg", (90, 200))
+
+
+@pytest.mark.skipif(shutil.which("magick") is None, reason="ImageMagick 7 is not installed")
+def test_phone_render_with_real_magick_crops_to_the_output(walictl: ModuleType, tmp_path: Path) -> None:
+    for name, size in (("landscape", "400x300"), ("portrait", "300x400")):
+        source = tmp_path / f"{name}.jpg"
+        subprocess.run(["magick", "-size", size, "xc:steelblue", str(source)], check=True)
+        target = tmp_path / f"{name}-phone.jpg"
+        walictl.phone_render(source, target, (90, 200))
+        identify = subprocess.run(["magick", "identify", "-format", "%wx%h", str(target)], capture_output=True, text=True, check=True)
+        assert identify.stdout == "90x200"
+
+
+ORIGINAL, LIBRARY_ONLY, OTHER = "PXL_20210608_111152739", "PXL_20210609_120000000", "PXL_20220402_162957459"
+
+
+def test_phone_sync_requires_the_config_table(walictl: ModuleType, env: dict[str, Path]) -> None:
+    code, _, stderr = run_cli(walictl, ["phone", "sync"])
+    assert code == 1 and stderr == "config table [phone] is required\n"
+
+
+def test_phone_sync_requires_the_ratings_file(walictl: ModuleType, env: dict[str, Path], magick: Path) -> None:
+    folder = phone_env(env)
+    folder.mkdir()
+    (folder / f"{OTHER}.jpg").write_bytes(b"keep")
+    code, stdout, stderr = run_cli(walictl, ["phone", "sync"])
+    assert code == 1 and stderr == f"favorites file not found: {env['favorites']}\n" and stdout == ""
+    assert (folder / f"{OTHER}.jpg").read_bytes() == b"keep"
+    assert not magick.exists()
+
+
+def test_phone_sync_mirrors_favorites(walictl: ModuleType, env: dict[str, Path], magick: Path) -> None:
+    folder = phone_env(env)
+    folder.mkdir()
+    (folder / "stale.jpg").write_bytes(b"old")
+    (folder / "PXL_x.jpg.tmp").write_bytes(b"half")
+    (folder / "holiday.tmp.jpg").write_bytes(b"a render whose id ends in .tmp")
+    (folder / ".private.jpg").write_bytes(b"dotfile")
+    (folder / ".private.jpg.tmp").write_bytes(b"dotfile")
+    (folder / "notes.txt").write_text("mine")
+    (folder / "photo.png").write_bytes(b"png")
+    (folder / "sub").mkdir()
+    write_ratings(env, [LIBRARY_ONLY, ORIGINAL, "holiday.tmp"], hidden=[OTHER])
+    code, stdout, stderr = run_cli(walictl, ["phone", "sync"])
+    assert (code, stdout, stderr) == (0, "rendered 2, removed 1, kept 0, skipped 1\n", "skipped holiday.tmp: missing from library\n")
+    original = env["archive"] / "2021" / "06" / f"{ORIGINAL}.jpg"
+    assert (folder / f"{ORIGINAL}.jpg").read_bytes() == b"render:" + str(original).encode()
+    assert (folder / f"{LIBRARY_ONLY}.jpg").read_bytes() == b"render:" + str(env["wallpapers"] / f"{LIBRARY_ONLY}.jpg").encode()
+    assert sorted(p.name for p in folder.iterdir()) == [
+        ".nomedia", ".private.jpg", ".private.jpg.tmp", f"{ORIGINAL}.jpg", f"{LIBRARY_ONLY}.jpg", "holiday.tmp.jpg", "notes.txt", "photo.png", "sub",
+    ]
+    lines = magick.read_text().splitlines()
+    assert [line.split()[0] for line in lines] == [str(original), str(env["wallpapers"] / f"{LIBRARY_ONLY}.jpg")]
+    assert all("-resize 90x200^ -gravity center -extent 90x200 -quality 88" in line for line in lines)
+    manifest = json.loads((env["state_home"] / "wali" / "phone.json").read_text())
+    assert manifest["version"] == 1 and sorted(manifest["renders"]) == [ORIGINAL, LIBRARY_ONLY]
+    assert manifest["renders"][ORIGINAL] == walictl.source_identity(original, (90, 200))
+    code, stdout, _ = run_cli(walictl, ["phone", "sync"])
+    assert (code, stdout) == (0, "rendered 0, removed 0, kept 2, skipped 1\n")
+    assert len(magick.read_text().splitlines()) == 2
+
+
+def test_phone_sync_skips_favorites_missing_from_library(walictl: ModuleType, env: dict[str, Path], magick: Path) -> None:
+    phone_env(env)
+    write_ratings(env, ["PXL_20300101_000000000", ORIGINAL])
+    code, stdout, stderr = run_cli(walictl, ["phone", "sync", "--json"])
+    assert code == 0 and stderr == "skipped PXL_20300101_000000000: missing from library\n"
+    assert json.loads(stdout) == {
+        "ok": True, "rendered": [ORIGINAL], "removed": [], "kept": 0,
+        "skipped": [{"id": "PXL_20300101_000000000", "reason": "missing from library"}],
+    }
+
+
+def test_phone_sync_rejects_a_path_like_favorite(walictl: ModuleType, env: dict[str, Path], magick: Path) -> None:
+    phone_env(env)
+    write_ratings(env, ["../victim"])
+    code, _, stderr = run_cli(walictl, ["phone", "sync"])
+    assert code == 1 and stderr.startswith("favorite id must be a single file name stem")
+
+
+def test_phone_sync_rerenders_when_the_original_appears(walictl: ModuleType, env: dict[str, Path], magick: Path) -> None:
+    folder = phone_env(env)
+    write_ratings(env, [LIBRARY_ONLY])
+    assert run_cli(walictl, ["phone", "sync"])[1] == "rendered 1, removed 0, kept 0, skipped 0\n"
+    original = env["archive"] / "2021" / "06" / f"{LIBRARY_ONLY}.jpg"
+    original.write_bytes(b"full-size")
+    assert run_cli(walictl, ["phone", "sync"])[1] == "rendered 1, removed 0, kept 0, skipped 0\n"
+    assert (folder / f"{LIBRARY_ONLY}.jpg").read_bytes() == b"render:" + str(original).encode()
+    assert run_cli(walictl, ["phone", "sync"])[1] == "rendered 0, removed 0, kept 1, skipped 0\n"
+
+
+def test_phone_sync_rerenders_on_source_output_or_force(walictl: ModuleType, env: dict[str, Path], magick: Path) -> None:
+    phone_env(env)
+    write_ratings(env, [ORIGINAL])
+    sync = lambda *extra: run_cli(walictl, ["phone", "sync", *extra])[1]
+    assert sync() == "rendered 1, removed 0, kept 0, skipped 0\n"
+    (env["archive"] / "2021" / "06" / f"{ORIGINAL}.jpg").write_bytes(b"re-edited")
+    assert sync() == "rendered 1, removed 0, kept 0, skipped 0\n"
+    assert sync() == "rendered 0, removed 0, kept 1, skipped 0\n"
+    config = env["config_home"] / "wali" / "config.toml"
+    config.write_text(config.read_text().replace('output = "90x200"', 'output = "100x220"'))
+    assert sync() == "rendered 1, removed 0, kept 0, skipped 0\n"
+    assert "-extent 100x220" in magick.read_text().splitlines()[-1]
+    assert sync() == "rendered 0, removed 0, kept 1, skipped 0\n"
+    assert sync("--force") == "rendered 1, removed 0, kept 0, skipped 0\n"
+
+
+def test_phone_sync_recovers_from_manifest_mismatch(walictl: ModuleType, env: dict[str, Path], magick: Path) -> None:
+    folder = phone_env(env)
+    write_ratings(env, [ORIGINAL, LIBRARY_ONLY])
+    manifest = env["state_home"] / "wali" / "phone.json"
+    assert run_cli(walictl, ["phone", "sync"])[1] == "rendered 2, removed 0, kept 0, skipped 0\n"
+    # Image written, manifest entry not yet: the render is stale.
+    payload = json.loads(manifest.read_text())
+    del payload["renders"][ORIGINAL]
+    manifest.write_text(json.dumps(payload))
+    assert run_cli(walictl, ["phone", "sync"])[1] == "rendered 1, removed 0, kept 1, skipped 0\n"
+    # Manifest entry present, image gone: the render is stale.
+    (folder / f"{LIBRARY_ONLY}.jpg").unlink()
+    assert run_cli(walictl, ["phone", "sync"])[1] == "rendered 1, removed 0, kept 1, skipped 0\n"
+    # Image gone without a removal, manifest entry left behind: a stale entry with no file is ignored.
+    write_ratings(env, [ORIGINAL])
+    (folder / f"{LIBRARY_ONLY}.jpg").unlink()
+    assert run_cli(walictl, ["phone", "sync"])[1] == "rendered 0, removed 0, kept 1, skipped 0\n"
+    # Manifest missing or malformed: everything is stale, with a warning for the malformed case.
+    manifest.unlink()
+    assert run_cli(walictl, ["phone", "sync"])[1] == "rendered 1, removed 0, kept 0, skipped 0\n"
+    manifest.write_text("{")
+    code, stdout, stderr = run_cli(walictl, ["phone", "sync"])
+    assert (code, stdout) == (0, "rendered 1, removed 0, kept 0, skipped 0\n")
+    assert stderr == f"phone manifest is not valid JSON: {manifest}; rebuilding\n"
+
+
+def test_phone_sync_dry_run_mutates_nothing(walictl: ModuleType, env: dict[str, Path], magick: Path) -> None:
+    folder = phone_env(env)
+    write_ratings(env, [ORIGINAL])
+    code, stdout, stderr = run_cli(walictl, ["phone", "sync", "--dry-run", "--json"])
+    assert code == 0 and stderr == ""
+    assert json.loads(stdout) == {"ok": True, "rendered": [ORIGINAL], "removed": [], "kept": 0, "skipped": []}
+    assert not folder.exists() and not magick.exists()
+    assert not (env["state_home"] / "wali" / "phone.json").exists()
+    folder.mkdir()
+    (folder / "stale.jpg").write_bytes(b"old")
+    (folder / "PXL_x.jpg.tmp").write_bytes(b"half")
+    code, stdout, _ = run_cli(walictl, ["phone", "sync", "--dry-run"])
+    assert (code, stdout) == (0, "rendered 1, removed 1, kept 0, skipped 0\n")
+    assert sorted(p.name for p in folder.iterdir()) == ["PXL_x.jpg.tmp", "stale.jpg"]
+
+
+def test_phone_sync_stops_at_a_magick_failure(
+    walictl: ModuleType, env: dict[str, Path], magick: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = phone_env(env)
+    folder.mkdir()
+    (folder / "stale.jpg").write_bytes(b"old")
+    write_ratings(env, [ORIGINAL, LIBRARY_ONLY])
+    monkeypatch.setenv("MAGICK_FAIL", "1")
+    code, stdout, stderr = run_cli(walictl, ["phone", "sync"])
+    assert (code, stdout, stderr) == (1, "", "magick failed: magick: boom\n")
+    assert sorted(p.name for p in folder.iterdir()) == [".nomedia"]
+    assert json.loads((env["state_home"] / "wali" / "phone.json").read_text()) == {"version": 1, "renders": {}}
+    assert len(magick.read_text().splitlines()) == 1
+
+
+def test_phone_sync_needs_magick_before_any_work(walictl: ModuleType, env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    folder = phone_env(env)
+    folder.mkdir()
+    (folder / "stale.jpg").write_bytes(b"old")
+    write_ratings(env, [])
+    monkeypatch.setenv("PATH", str(env["config_home"] / "empty"))
+    code, _, stderr = run_cli(walictl, ["phone", "sync"])
+    assert code == 1 and stderr == "magick command not found\n"
+    assert sorted(p.name for p in folder.iterdir()) == ["stale.jpg"]
+    assert run_cli(walictl, ["phone", "sync", "--dry-run"])[0] == 0
+
+
+def test_phone_sync_empty_favorites_empties_the_folder(walictl: ModuleType, env: dict[str, Path], magick: Path) -> None:
+    folder = phone_env(env)
+    folder.mkdir()
+    (folder / "stale.jpg").write_bytes(b"old")
+    write_ratings(env, [])
+    code, stdout, _ = run_cli(walictl, ["phone", "sync"])
+    assert (code, stdout) == (0, "rendered 0, removed 1, kept 0, skipped 0\n")
+    assert sorted(p.name for p in folder.iterdir()) == [".nomedia"]
+
+
+def test_phone_sync_holds_the_lock_while_rendering(
+    walictl: ModuleType, env: dict[str, Path], magick: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    phone_env(env)
+    write_ratings(env, [ORIGINAL])
+    monkeypatch.setenv("MAGICK_EXPECT_LOCK", str(env["state_home"] / "wali" / "phone.lock"))
+    code, stdout, stderr = run_cli(walictl, ["phone", "sync"])
+    assert (code, stdout, stderr) == (0, "rendered 1, removed 0, kept 0, skipped 0\n", "")
+
+
+def test_phone_sync_rejects_a_file_at_dir(walictl: ModuleType, env: dict[str, Path], magick: Path) -> None:
+    folder = phone_env(env)
+    folder.write_text("not a directory")
+    write_ratings(env, [ORIGINAL])
+    for extra in ([], ["--dry-run"]):
+        code, stdout, stderr = run_cli(walictl, ["phone", "sync", *extra])
+        assert (code, stdout, stderr) == (1, "", f"phone.dir is not a directory: {folder}\n")
+    assert folder.read_text() == "not a directory"
 
 
 def test_load_config_resolves_symlinked_directories(walictl: ModuleType, tmp_path: Path) -> None:
@@ -252,7 +624,7 @@ def test_resolve_variant_and_source(walictl: ModuleType, env: dict[str, Path]) -
     assert walictl.resolve_source(config, "PXL_20210608_111152739") == env["archive"] / "2021" / "06" / "PXL_20210608_111152739.jpg"
     assert walictl.resolve_source(config, "PXL_20210609_120000000") is None
     assert walictl.resolve_source(config, "IMG_1") is None
-    no_archive = walictl.Config(config.wallpaper_dir, config.favorites_file, None, None, config.sampling)
+    no_archive = walictl.Config(config.wallpaper_dir, config.favorites_file, None, None, None, config.sampling)
     assert walictl.resolve_source(no_archive, "PXL_20210608_111152739") is None
 
 

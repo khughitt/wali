@@ -1,0 +1,6 @@
+[Unit]
+Description=Mirror favorites into the phone folder with walictl
+
+[Service]
+Type=oneshot
+ExecStart=%h/bin/walictl phone sync
