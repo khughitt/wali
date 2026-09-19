@@ -7,6 +7,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from contextlib import redirect_stderr, redirect_stdout
@@ -80,6 +81,44 @@ def noctalia(env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> FakeNocta
     fake = FakeNoctalia(env["wallpapers"] / "PXL_20210608_111152739.jpg")
     monkeypatch.setattr(subprocess, "run", fake.run)
     return fake
+
+
+@pytest.fixture
+def magick(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A magick stand-in on PATH: logs argv, writes its last argument, fails when MAGICK_FAIL is set.
+
+    With MAGICK_EXPECT_LOCK set to a lock path it exits 3 unless that lock is held by someone else.
+    Returns the argv log; one line per call.
+    """
+    bin_dir, log = tmp_path / "stub-bin", tmp_path / "magick.log"
+    bin_dir.mkdir()
+    stub = bin_dir / "magick"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import fcntl, os, sys\n"
+        f"with open({str(log)!r}, 'a') as handle:\n"
+        "    handle.write(' '.join(sys.argv[1:]) + '\\n')\n"
+        "lock = os.environ.get('MAGICK_EXPECT_LOCK')\n"
+        "if lock:\n"
+        "    with open(lock, 'a') as handle:\n"
+        "        try:\n"
+        "            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "        except BlockingIOError:\n"
+        "            pass\n"
+        "        else:\n"
+        "            sys.stderr.write('lock not held\\n')\n"
+        "            sys.exit(3)\n"
+        "if os.environ.get('MAGICK_FAIL'):\n"
+        "    sys.stderr.write('magick: boom\\n')\n"
+        "    sys.exit(1)\n"
+        "with open(sys.argv[-1].removeprefix('jpg:'), 'wb') as out:\n"
+        "    out.write(b'render:' + sys.argv[1].encode())\n"
+    )
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    monkeypatch.delenv("MAGICK_FAIL", raising=False)
+    monkeypatch.delenv("MAGICK_EXPECT_LOCK", raising=False)
+    return log
 
 
 def run_cli(walictl: ModuleType, argv: list[str]) -> tuple[int, str, str]:
@@ -231,6 +270,50 @@ def test_phone_manifest_round_trip_and_recovery(walictl: ModuleType, tmp_path: P
     path.write_bytes(b"\xff\xfe not utf-8")
     assert walictl.PhoneManifest.load(path, warnings.append).renders == {}
     assert warnings[-1] == f"phone manifest is unreadable: {path}; rebuilding"
+
+
+def test_phone_render_argv_and_atomic_publish(walictl: ModuleType, tmp_path: Path, magick: Path) -> None:
+    source, target = tmp_path / "src.jpg", tmp_path / "out" / "PXL_1.jpg"
+    source.write_bytes(b"x")
+    target.parent.mkdir()
+    walictl.phone_render(source, target, (90, 200))
+    assert target.read_bytes() == b"render:" + str(source).encode()
+    assert sorted(p.name for p in target.parent.iterdir()) == ["PXL_1.jpg"]
+    assert magick.read_text().splitlines() == [
+        f"{source} -auto-orient -strip -resize 90x200^ -gravity center -extent 90x200 -quality 88 jpg:{target.parent / 'PXL_1.jpg.tmp'}"
+    ]
+
+
+def test_phone_render_failure_removes_the_temporary(
+    walictl: ModuleType, tmp_path: Path, magick: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, target = tmp_path / "src.jpg", tmp_path / "PXL_1.jpg"
+    source.write_bytes(b"x")
+    target.write_bytes(b"previous")
+    monkeypatch.setenv("MAGICK_FAIL", "1")
+    with pytest.raises(walictl.WalictlError, match=re.escape("magick failed: magick: boom")):
+        walictl.phone_render(source, target, (90, 200))
+    assert target.read_bytes() == b"previous"
+    assert not (tmp_path / "PXL_1.jpg.tmp").exists()
+
+
+def test_phone_render_without_magick(walictl: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    source = tmp_path / "src.jpg"
+    source.write_bytes(b"x")
+    with pytest.raises(walictl.WalictlError, match="magick command not found"):
+        walictl.phone_render(source, tmp_path / "PXL_1.jpg", (90, 200))
+
+
+@pytest.mark.skipif(shutil.which("magick") is None, reason="ImageMagick 7 is not installed")
+def test_phone_render_with_real_magick_crops_to_the_output(walictl: ModuleType, tmp_path: Path) -> None:
+    for name, size in (("landscape", "400x300"), ("portrait", "300x400")):
+        source = tmp_path / f"{name}.jpg"
+        subprocess.run(["magick", "-size", size, "xc:steelblue", str(source)], check=True)
+        target = tmp_path / f"{name}-phone.jpg"
+        walictl.phone_render(source, target, (90, 200))
+        identify = subprocess.run(["magick", "identify", "-format", "%wx%h", str(target)], capture_output=True, text=True, check=True)
+        assert identify.stdout == "90x200"
 
 
 def test_load_config_resolves_symlinked_directories(walictl: ModuleType, tmp_path: Path) -> None:

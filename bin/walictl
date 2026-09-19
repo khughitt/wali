@@ -402,6 +402,25 @@ def source_identity(source: Path, output: tuple[int, int]) -> dict[str, object]:
     return {"source": str(source), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "output": f"{output[0]}x{output[1]}"}
 
 
+def phone_render(source: Path, target: Path, output: tuple[int, int]) -> None:
+    """One magick call: cover-scale and centre-crop source to output, published atomically as target."""
+    size = f"{output[0]}x{output[1]}"
+    tmp = target.with_name(f"{target.stem}{PHONE_TMP_SUFFIX}")
+    argv = [
+        "magick", str(source), "-auto-orient", "-strip",
+        "-resize", f"{size}^", "-gravity", "center", "-extent", size,
+        "-quality", "88", f"jpg:{tmp}",
+    ]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, check=False)
+    except FileNotFoundError as exc:
+        raise WalictlError("magick command not found") from exc
+    if result.returncode != 0:
+        tmp.unlink(missing_ok=True)
+        raise WalictlError(f"magick failed: {result.stderr.strip()}")
+    os.replace(tmp, target)
+
+
 def _identity_entry(value: object) -> dict[str, object] | None:
     if not isinstance(value, dict):
         return None
