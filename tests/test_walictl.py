@@ -63,10 +63,12 @@ class FakeNoctalia:
     def __init__(self, default: Path | None, *, reject_set: str | None = None) -> None:
         self.default, self.reject_set = default, reject_set
         self.calls: list[list[str]] = []
+        self.real_run = subprocess.run
 
     def run(self, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if list(args[:2]) != ["noctalia", "msg"]:
+            return self.real_run(args, **kwargs)
         self.calls.append(list(args))
-        assert args[:2] == ["noctalia", "msg"], args
         if args[2] == "wallpaper-get":
             return subprocess.CompletedProcess(args, 0, stdout=f"{self.default}\n" if self.default else "\n", stderr="")
         if args[2] == "wallpaper-set":
@@ -120,6 +122,42 @@ def magick(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv("MAGICK_FAIL", raising=False)
     monkeypatch.delenv("MAGICK_EXPECT_LOCK", raising=False)
     return log
+
+
+@pytest.fixture
+def fake_magick(env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> Path:
+    bin_dir = env["cache_home"].parent / "bin"
+    bin_dir.mkdir()
+    log = bin_dir / "magick.log"
+    script = bin_dir / "magick"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, shutil, sys\n"
+        "args = sys.argv[1:]\n"
+        "if args and args[0] == 'identify':\n"
+        "    sys.stdout.write(os.environ.get('FAKE_MAGICK_SIZE', '3440 1935'))\n"
+        "    sys.exit(0)\n"
+        f"with open({str(log)!r}, 'a') as handle:\n"
+        "    handle.write(json.dumps(args) + '\\n')\n"
+        "if os.environ.get('FAKE_MAGICK_FAIL'):\n"
+        "    sys.stderr.write('boom\\n')\n"
+        "    sys.exit(1)\n"
+        "if os.environ.get('FAKE_MAGICK_PARTIAL'):\n"
+        "    open(args[-1], 'wb').write(b'x')\n"
+        "    sys.stderr.write('died\\n')\n"
+        "    sys.exit(1)\n"
+        "shutil.copyfile(args[0], args[-1])\n"
+    )
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    monkeypatch.delenv("FAKE_MAGICK_FAIL", raising=False)
+    monkeypatch.delenv("FAKE_MAGICK_PARTIAL", raising=False)
+    monkeypatch.delenv("FAKE_MAGICK_SIZE", raising=False)
+    return log
+
+
+def magick_calls(log: Path) -> list[list[str]]:
+    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
 
 def run_cli(walictl: ModuleType, argv: list[str]) -> tuple[int, str, str]:
@@ -212,6 +250,23 @@ def test_load_config_reads_phone(walictl: ModuleType, env: dict[str, Path]) -> N
     assert config.phone == walictl.PhoneConfig(dir=folder, output=(1344, 2992))
 
 
+def test_phone_and_edits_commands_share_a_config(walictl: ModuleType, env: dict[str, Path], magick: Path) -> None:
+    edits, folder = env["wallpapers"].parent / "edits.json", env["wallpapers"].parent / "phone"
+    config = env["config_home"] / "wali" / "config.toml"
+    config.write_text(
+        f'wallpaper_dir = "{env["wallpapers"]}"\nfavorites_file = "{env["favorites"]}"\n'
+        f'archive_root = "{env["archive"]}"\nedits_file = "{edits}"\n\n'
+        '[edits]\noutput = "3440x1440"\n\n'
+        f'[phone]\ndir = "{folder}"\noutput = "90x200"\n'
+    )
+    parsed = walictl.load_config(config)
+    assert parsed.edits == walictl.EditsConfig(file=edits, output=(3440, 1440))
+    assert parsed.phone == walictl.PhoneConfig(dir=folder, output=(90, 200))
+    write_ratings(env, [ORIGINAL])
+    assert run_cli(walictl, ["phone", "sync"])[0] == 0
+    assert run_cli(walictl, ["variant", "show", ORIGINAL, "--json"])[0] == 0
+
+
 @pytest.mark.parametrize(
     ("extra", "message"),
     [
@@ -251,11 +306,11 @@ def test_phone_paths_live_in_state_dir(walictl: ModuleType, env: dict[str, Path]
     assert walictl.phone_manifest_path() == env["state_home"] / "wali" / "phone.json"
 
 
-def test_source_identity_records_path_size_mtime_and_output(walictl: ModuleType, tmp_path: Path) -> None:
+def test_phone_source_identity_records_path_size_mtime_and_output(walictl: ModuleType, tmp_path: Path) -> None:
     source = tmp_path / "s.jpg"
     source.write_bytes(b"abc")
     os.utime(source, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_001))
-    assert walictl.source_identity(source, (1344, 2992)) == {
+    assert walictl.phone_source_identity(source, (1344, 2992)) == {
         "source": str(source), "size": 3, "mtime_ns": 1_700_000_000_000_000_001, "output": "1344x2992",
     }
 
@@ -369,7 +424,7 @@ def test_phone_sync_mirrors_favorites(walictl: ModuleType, env: dict[str, Path],
     assert all("-resize 90x200^ -gravity center -extent 90x200 -quality 88" in line for line in lines)
     manifest = json.loads((env["state_home"] / "wali" / "phone.json").read_text())
     assert manifest["version"] == 1 and sorted(manifest["renders"]) == [ORIGINAL, LIBRARY_ONLY]
-    assert manifest["renders"][ORIGINAL] == walictl.source_identity(original, (90, 200))
+    assert manifest["renders"][ORIGINAL] == walictl.phone_source_identity(original, (90, 200))
     code, stdout, _ = run_cli(walictl, ["phone", "sync"])
     assert (code, stdout) == (0, "rendered 0, removed 0, kept 2, skipped 1\n")
     assert len(magick.read_text().splitlines()) == 2
@@ -390,7 +445,7 @@ def test_phone_sync_rejects_a_path_like_favorite(walictl: ModuleType, env: dict[
     phone_env(env)
     write_ratings(env, ["../victim"])
     code, _, stderr = run_cli(walictl, ["phone", "sync"])
-    assert code == 1 and stderr.startswith("favorite id must be a single file name stem")
+    assert code == 1 and stderr.startswith("favorites file id must be a single file name stem")
 
 
 def test_phone_sync_rerenders_when_the_original_appears(walictl: ModuleType, env: dict[str, Path], magick: Path) -> None:
@@ -618,9 +673,8 @@ def test_cli_rejects_path_like_ids(walictl: ModuleType, env: dict[str, Path]) ->
     assert code == 2 and "single file name stem" in stderr
 
 
-def test_resolve_variant_and_source(walictl: ModuleType, env: dict[str, Path]) -> None:
+def test_resolve_source(walictl: ModuleType, env: dict[str, Path]) -> None:
     config = walictl.load_config(walictl.config_path())
-    assert walictl.resolve_variant(config, "PXL_20210608_111152739") is None
     assert walictl.resolve_source(config, "PXL_20210608_111152739") == env["archive"] / "2021" / "06" / "PXL_20210608_111152739.jpg"
     assert walictl.resolve_source(config, "PXL_20210609_120000000") is None
     assert walictl.resolve_source(config, "IMG_1") is None
@@ -695,9 +749,581 @@ def test_ratings_reject_corrupt_file(walictl: ModuleType, tmp_path: Path) -> Non
     path.write_text('{"version": 2, "favorites": {}}')
     with pytest.raises(walictl.WalictlError, match="favorites file has no hidden object"):
         walictl.Ratings.load(path)
+    path.write_text('{"version": 2, "favorites": {"../x": {"added": "T"}}, "hidden": {}}')
+    with pytest.raises(walictl.WalictlError, match="favorites file id must be a single file name stem"):
+        walictl.Ratings.load(path)
     path.write_text('{"version": 2, "favorites": {"a": {"added": "T"}}, "hidden": {"a": {"added": "T"}}}')
     with pytest.raises(walictl.WalictlError, match="photo in both favorites and hidden: a"):
         walictl.Ratings.load(path)
+
+
+def test_parse_settings_drops_defaults_and_validates(walictl: ModuleType) -> None:
+    assert walictl.parse_settings([]) == {}
+    assert walictl.parse_settings(["brightness=0", "saturation=100", "anchor=center", "rotate=0"]) == {}
+    assert walictl.parse_settings(["rotate=90", "brightness=-10", "saturation=80", "anchor=top"]) == {
+        "rotate": 90, "brightness": -10, "saturation": 80, "anchor": "top",
+    }
+    for bad, message in (
+        (["rotate=45"], "rotate must be one of 0, 90, 180, 270"),
+        (["anchor=middle"], "anchor must be one of center, top, bottom, left, right"),
+        (["brightness=101"], "brightness must be between -100 and 100"),
+        (["blur=-1"], "blur must be between 0 and 20"),
+        (["blur=1.5"], "blur must be an integer"),
+        (["chroma=5"], "unknown recipe key: chroma"),
+        (["brightness"], "settings take the form key=value: brightness"),
+        (["brightness=1", "brightness=2"], "duplicate setting: brightness"),
+    ):
+        with pytest.raises(walictl.WalictlError, match=re.escape(message)):
+            walictl.parse_settings(bad)
+
+
+def test_effective_and_canonical_recipe(walictl: ModuleType) -> None:
+    assert walictl.effective({"rotate": 90}) == {**walictl.RECIPE_DEFAULTS, "rotate": 90}
+    assert walictl.canonical({"saturation": 80, "rotate": 90}) == '{"rotate":90,"saturation":80}'
+    assert walictl.canonical({}) == "{}"
+
+
+def test_edits_store_round_trip_and_validation(walictl: ModuleType, tmp_path: Path) -> None:
+    path = tmp_path / "edits.json"
+    store = walictl.EditsStore.load(path)
+    assert store.get("a") is None
+    store.set("a", {"rotate": 90, "anchor": "top"}, "T1")
+    store.save(path)
+    loaded = walictl.EditsStore.load(path)
+    assert loaded.get("a") == {"rotate": 90, "anchor": "top"}
+    assert json.loads(path.read_text()) == {"version": 1, "edits": {"a": {"rotate": 90, "anchor": "top", "updated": "T1"}}}
+    assert loaded.remove("a") is True and loaded.remove("a") is False
+    loaded.set("b", {}, "T2")
+    assert loaded.get("b") is None, "an all-default recipe is not stored"
+    for text, message in (
+        ("{not json", "edits file is not valid JSON"),
+        ('{"version": 2, "edits": {}}', "unsupported edits version"),
+        ('{"version": 1}', "edits file has no edits object"),
+        ('{"version": 1, "edits": {"a": 5}}', "malformed edits entry: a"),
+        ('{"version": 1, "edits": {"a": {"rotate": 45, "updated": "T"}}}', "malformed edits entry: a: rotate must be one of"),
+        ('{"version": 1, "edits": {"a": {"rotate": 90}}}', "malformed edits entry: a: missing updated"),
+        ('{"version": 1, "edits": {"../victim": {"rotate": 90, "updated": "T"}}}', "edits file id must be a single file name stem"),
+    ):
+        path.write_text(text)
+        with pytest.raises(walictl.WalictlError, match=re.escape(message)):
+            walictl.EditsStore.load(path)
+    path.write_text('{"version": 1, "edits": {"a": {"rotate": 0, "updated": "T"}}}')
+    loaded = walictl.EditsStore.load(path)
+    assert loaded.get("a") is None, "an all-default recipe loads as absent"
+    loaded.save(path)
+    assert json.loads(path.read_text())["edits"] == {}, "a save drops all-default recipes"
+
+
+def test_edit_locks_live_in_state_dir(walictl: ModuleType, env: dict[str, Path]) -> None:
+    assert walictl.edits_lock() == env["state_home"] / "wali" / "edits.lock"
+    assert walictl.variants_lock() == env["state_home"] / "wali" / "variants.lock"
+
+
+@pytest.mark.parametrize(
+    ("size", "anchor", "expected"),
+    [
+        ((3440, 1935), "center", (3440, 1440, 0, 247)),
+        ((3440, 1935), "top", (3440, 1440, 0, 0)),
+        ((3440, 1935), "bottom", (3440, 1440, 0, 495)),
+        ((1935, 3440), "center", (1935, 810, 0, 1315)),
+        ((1935, 3440), "left", (1935, 810, 0, 1315)),
+        ((4000, 1000), "left", (2388, 1000, 0, 0)),
+        ((4000, 1000), "right", (2388, 1000, 1612, 0)),
+        ((4000, 1000), "center", (2388, 1000, 806, 0)),
+    ],
+)
+def test_crop_box_fits_output_aspect_from_anchor(
+    walictl: ModuleType, size: tuple[int, int], anchor: str, expected: tuple[int, int, int, int]
+) -> None:
+    assert walictl.crop_box(size[0], size[1], (3440, 1440), anchor) == expected
+
+
+def test_magick_argv_per_key(walictl: ModuleType, env: dict[str, Path], fake_magick: Path) -> None:
+    src, dst = Path("/s.jpg"), Path("/d.jpg")
+    base = ["magick", "/s.jpg"]
+    tail = ["-quality", "92", "/d.jpg"]
+    argv = walictl.magick_argv
+    assert argv(src, {}, None, dst, None) == base + tail
+    assert argv(src, {"rotate": 90}, None, dst, None) == base + ["-rotate", "90"] + tail
+    assert argv(src, {"brightness": 10, "contrast": -5}, None, dst, None) == base + ["-brightness-contrast", "10x-5"] + tail
+    assert argv(src, {"saturation": 80}, None, dst, None) == base + ["-modulate", "100,80,100"] + tail
+    assert argv(src, {"hue": 90}, None, dst, None) == base + ["-modulate", "100,100,150"] + tail
+    assert argv(src, {"blur": 3}, None, dst, None) == base + ["-blur", "0x3"] + tail
+    assert argv(src, {"noise": 40}, None, dst, None) == base + ["-attenuate", "0.4", "+noise", "Gaussian"] + tail
+    assert argv(src, {"bloom": 50}, None, dst, None) == base + [
+        "(", "+clone", "-blur", "0x25", "-evaluate", "multiply", "0.5", ")", "-compose", "screen", "-composite",
+    ] + tail
+    assert argv(src, {"brightness": 1}, (3440, 1440), dst, None) == base + ["-brightness-contrast", "1x0"] + tail
+    assert argv(src, {"anchor": "top"}, (3440, 1440), dst, None) == base + ["-crop", "3440x1440+0+0", "+repage"] + tail
+    assert argv(src, {"rotate": 90, "anchor": "top"}, (3440, 1440), dst, None) == base + [
+        "-rotate", "90", "-crop", "1935x810+0+0", "+repage",
+    ] + tail
+    assert argv(src, {"rotate": 180, "blur": 2, "bloom": 10, "noise": 10, "saturation": 50, "anchor": "bottom"}, (3440, 1440), dst, None) == base + [
+        "-rotate", "180", "-modulate", "100,50,100", "-blur", "0x2",
+        "(", "+clone", "-blur", "0x25", "-evaluate", "multiply", "0.1", ")", "-compose", "screen", "-composite",
+        "-attenuate", "0.1", "+noise", "Gaussian",
+        "-crop", "3440x1440+0+495", "+repage",
+    ] + tail
+
+
+def test_magick_argv_preview_scales_pixel_units_and_crops(walictl: ModuleType, env: dict[str, Path], fake_magick: Path) -> None:
+    src, dst = Path("/s.jpg"), Path("/p.jpg")
+    argv = walictl.magick_argv
+    got = argv(src, {"blur": 10, "noise": 50, "bloom": 20}, None, dst, 560)
+    assert got[:4] == ["magick", "/s.jpg", "-resize", "560x"]
+    assert got[4:6] == ["-blur", "0x1.628"]
+    assert got[6:17] == ["(", "+clone", "-blur", "0x4.07", "-evaluate", "multiply", "0.2", ")", "-compose", "screen", "-composite"]
+    assert got[17:21] == ["-attenuate", "0.5", "+noise", "Gaussian"]
+    assert got[21:] == ["-quality", "92", "/p.jpg"]
+    assert argv(src, {}, (3440, 1440), dst, 560) == ["magick", "/s.jpg", "-resize", "560x", "-crop", "560x234+0+40", "+repage", "-quality", "92", "/p.jpg"]
+    got = argv(src, {"rotate": 90, "blur": 10, "anchor": "top"}, (3440, 1440), dst, 560)
+    assert got == ["magick", "/s.jpg", "-rotate", "90", "-resize", "560x", "-blur", "0x2.894", "-crop", "560x234+0+0", "+repage", "-quality", "92", "/p.jpg"]
+
+
+def test_render_runs_magick_and_reports_failures(walictl: ModuleType, env: dict[str, Path], fake_magick: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = env["wallpapers"] / "PXL_20210608_111152739.jpg"
+    source.write_bytes(b"jpeg")
+    dest = env["cache_home"] / "out.jpg"
+    dest.parent.mkdir(parents=True)
+    walictl.render(source, {"rotate": 90}, None, dest)
+    assert dest.read_bytes() == b"jpeg"
+    assert magick_calls(fake_magick) == [[str(source), "-rotate", "90", "-quality", "92", str(dest)]]
+    monkeypatch.setenv("FAKE_MAGICK_FAIL", "1")
+    with pytest.raises(walictl.WalictlError, match="magick failed: boom"):
+        walictl.render(source, {"rotate": 90}, None, dest)
+    monkeypatch.setenv("PATH", str(env["cache_home"]))
+    with pytest.raises(walictl.WalictlError, match="magick command not found"):
+        walictl.render(source, {"rotate": 90}, None, dest)
+
+
+def test_output_required_for_anchor(walictl: ModuleType) -> None:
+    walictl.output_required({"anchor": "top"}, (1, 1))
+    walictl.output_required({"brightness": 1}, None)
+    with pytest.raises(walictl.WalictlError, match="config key edits.output is required for anchor"):
+        walictl.output_required({"anchor": "top"}, None)
+
+
+@pytest.mark.skipif(shutil.which("magick") is None, reason="ImageMagick is not installed")
+def test_preview_matches_downscaled_full_render(walictl: ModuleType, tmp_path: Path) -> None:
+    source = tmp_path / "PXL_20210608_111152739.jpg"
+    subprocess.run(
+        ["magick", "-size", "1200x800", "plasma:fractal", "-seed", "7", "-quality", "95", str(source)],
+        check=True, capture_output=True,
+    )
+    recipe = {"rotate": 90, "anchor": "top", "blur": 6, "bloom": 40, "saturation": 70}
+    output = (1600, 1000)
+    full, preview = tmp_path / "full.jpg", tmp_path / "preview.jpg"
+    walictl.render(source, recipe, output, full)
+    walictl.render(source, recipe, output, preview, walictl.PREVIEW_WIDTH)
+    shrunk = tmp_path / "shrunk.jpg"
+    subprocess.run(["magick", str(full), "-resize", f"{walictl.PREVIEW_WIDTH}x", str(shrunk)], check=True, capture_output=True)
+    sizes = [
+        subprocess.run(["magick", "identify", "-format", "%w %h", str(p)], check=True, capture_output=True, text=True).stdout
+        for p in (shrunk, preview)
+    ]
+    assert sizes[0] == sizes[1], f"preview {sizes[1]!r} must have the shrunk full render's size {sizes[0]!r}"
+    compare = subprocess.run(
+        ["magick", "compare", "-metric", "RMSE", str(shrunk), str(preview), "null:"], check=False, capture_output=True, text=True
+    )
+    # compare exits 1 when images differ at all; the metric is what matters: "123.4 (0.0188)"
+    normalized = float(compare.stderr.strip().split("(")[1].rstrip(")"))
+    assert normalized < 0.03, f"preview diverges from the full render: RMSE {normalized}"
+
+
+def test_ensure_variant_renders_per_key_and_never_deletes(
+    walictl: ModuleType, env: dict[str, Path], fake_magick: Path
+) -> None:
+    enable_edits(env)
+    config = walictl.load_config(walictl.config_path())
+    library = walictl.scan_library(config.wallpaper_dir)
+    photo = "PXL_20210608_111152739"
+    (env["wallpapers"] / f"{photo}.jpg").write_bytes(b"v1")
+    assert walictl.ensure_variant(config, library, photo) is None
+    assert magick_calls(fake_magick) == []
+    recipe_for(walictl, env, photo, {"rotate": 90})
+    first = walictl.ensure_variant(config, library, photo)
+    key = walictl.render_key({"rotate": 90}, (3440, 1440), walictl.source_identity(library[photo]))
+    assert first == walictl.variant_file(photo, key) and first.read_bytes() == b"v1"
+    assert first.stem == photo, "the render keeps the photo id as its stem"
+    assert len(magick_calls(fake_magick)) == 1
+    assert walictl.ensure_variant(config, library, photo) == first
+    assert len(magick_calls(fake_magick)) == 1, "an existing keyed render is not repeated"
+    assert walictl.current_variant(config, library, photo) == first
+    recipe_for(walictl, env, photo, {"rotate": 180})
+    assert walictl.current_variant(config, library, photo) is None, "current_variant never renders"
+    second = walictl.ensure_variant(config, library, photo)
+    assert second != first and second.parent != first.parent, "a changed recipe renders to a new path"
+    assert first.exists(), "ensure_variant never deletes"
+    (env["wallpapers"] / f"{photo}.jpg").write_bytes(b"v2-longer")
+    third = walictl.ensure_variant(config, library, photo)
+    assert third not in (first, second) and third.read_bytes() == b"v2-longer", "a changed source renders to a new path"
+    assert not list(walictl.variant_dir(photo).rglob("*.tmp.jpg")), "no temp files left behind"
+    recipe_for(walictl, env, photo, {})
+    assert walictl.ensure_variant(config, library, photo) is None
+    assert renders_of(walictl, photo) == sorted([first, second, third]), "a removed recipe leaves renders for the prune"
+    walictl.prune_variants(photo, keep=None)
+    assert renders_of(walictl, photo) == []
+    assert not walictl.variant_dir(photo).exists()
+
+
+def test_metadata_tolerates_a_recipe_whose_source_is_missing(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path
+) -> None:
+    enable_edits(env)
+    config = walictl.load_config(walictl.config_path())
+    library = walictl.scan_library(config.wallpaper_dir)
+    gone = "PXL_20210919_170859013"
+    recipe_for(walictl, env, gone, {"rotate": 90})
+    assert walictl.current_variant(config, library, gone) is None
+    with pytest.raises(walictl.WalictlError, match=f"unknown photo id: {gone}"):
+        walictl.ensure_variant(config, library, gone)
+    ratings_of(walictl, favorites=(gone, "PXL_20210608_111152739")).save(env["favorites"])
+    code, stdout, stderr = run_cli(walictl, ["favorites", "--json"])
+    assert (code, stderr) == (0, "")
+    items = {item["id"]: item for item in json.loads(stdout)["favorites"]}
+    assert items[gone]["exists"] is False and items[gone]["path"] is None
+    assert items["PXL_20210608_111152739"]["exists"] is True
+    assert magick_calls(fake_magick) == []
+
+
+def test_replay_of_a_path_like_history_id_fails_before_touching_the_cache(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path
+) -> None:
+    enable_edits(env)
+    victim = env["cache_home"] / "wali" / "victim" / "x.jpg"
+    victim.parent.mkdir(parents=True)
+    victim.touch()
+    walictl.history_path().parent.mkdir(parents=True, exist_ok=True)
+    walictl.history_path().write_text(json.dumps({
+        "version": 1, "cursor": 1,
+        "entries": [
+            {"ts": "T", "id": "../victim", "path": str(victim), "origin": "observed"},
+            {"ts": "T", "id": "PXL_20210608_111152739", "path": str(env["wallpapers"] / "PXL_20210608_111152739.jpg"), "origin": "next"},
+        ],
+    }))
+    code, _, stderr = run_cli(walictl, ["previous"])
+    assert code == 1 and "history entry id in" in stderr
+    assert victim.exists()
+
+
+def test_prune_variants_keeps_only_the_displayed_render(walictl: ModuleType, env: dict[str, Path], fake_magick: Path) -> None:
+    enable_edits(env)
+    config = walictl.load_config(walictl.config_path())
+    library = walictl.scan_library(config.wallpaper_dir)
+    photo = "PXL_20210608_111152739"
+    recipe_for(walictl, env, photo, {"rotate": 90})
+    first = walictl.ensure_variant(config, library, photo)
+    recipe_for(walictl, env, photo, {"rotate": 180})
+    second = walictl.ensure_variant(config, library, photo)
+    walictl.prune_variants(photo, keep=second)
+    assert renders_of(walictl, photo) == [second] and not first.parent.exists()
+    walictl.prune_variants("PXL_20210609_120000000", keep=None)
+
+
+def test_ensure_variant_failure_keeps_the_previous_render(
+    walictl: ModuleType, env: dict[str, Path], fake_magick: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    enable_edits(env)
+    config = walictl.load_config(walictl.config_path())
+    library = walictl.scan_library(config.wallpaper_dir)
+    photo = "PXL_20210608_111152739"
+    (env["wallpapers"] / f"{photo}.jpg").write_bytes(b"v1")
+    recipe_for(walictl, env, photo, {"rotate": 90})
+    first = walictl.ensure_variant(config, library, photo)
+    recipe_for(walictl, env, photo, {"rotate": 270})
+    monkeypatch.setenv("FAKE_MAGICK_PARTIAL", "1")
+    with pytest.raises(walictl.WalictlError, match="magick failed: died"):
+        walictl.ensure_variant(config, library, photo)
+    assert first.read_bytes() == b"v1" and renders_of(walictl, photo) == [first]
+    assert not list(walictl.variant_dir(photo).rglob("*.tmp.jpg")), "a partial render is removed"
+    monkeypatch.delenv("FAKE_MAGICK_PARTIAL")
+    assert walictl.current_variant(config, library, photo) is None, "a failed render is never current"
+
+
+def test_navigation_never_renders_with_edits_unset(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path
+) -> None:
+    assert run_cli(walictl, ["random", "--seed", "3"])[0] == 0
+    assert run_cli(walictl, ["previous"])[0] == 0
+    assert run_cli(walictl, ["later"])[0] == 0
+    assert magick_calls(fake_magick) == []
+
+
+def test_sampling_and_replay_use_the_rendered_variant(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path
+) -> None:
+    enable_edits(env)
+    for stem in ("PXL_20210609_120000000", "PXL_20220402_162957459"):
+        recipe_for(walictl, env, stem, {"brightness": 5})
+    run_cli(walictl, ["random", "--seed", "3"])
+    picked = load_history(walictl).entries[1]
+    assert Path(picked.path).stem == picked.id and Path(picked.path).is_relative_to(walictl.variant_dir(picked.id))
+    assert noctalia.default == Path(picked.path)
+    recipe_for(walictl, env, "PXL_20210608_111152739", {"rotate": 90})
+    code, stdout, _ = run_cli(walictl, ["previous"])
+    assert (code, stdout) == (0, "previous: PXL_20210608_111152739\n")
+    default = noctalia.default
+    assert default is not None and default.is_relative_to(walictl.variant_dir("PXL_20210608_111152739"))
+    assert load_history(walictl).entries[0].path == str(default)
+    recipe_for(walictl, env, picked.id, {})
+    code, stdout, _ = run_cli(walictl, ["next"])
+    assert (code, stdout) == (0, f"next: {picked.id}\n")
+    assert noctalia.default == env["wallpapers"] / f"{picked.id}.jpg"
+    assert renders_of(walictl, picked.id) == []
+
+
+def test_selection_prunes_only_after_a_successful_set(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path
+) -> None:
+    enable_edits(env)
+    photo = "PXL_20210609_120000000"
+    recipe_for(walictl, env, photo, {"rotate": 90})
+    assert run_cli(walictl, ["later"])[0] == 0
+    first = noctalia.default
+    assert first is not None
+    assert run_cli(walictl, ["earlier"])[0] == 0
+    recipe_for(walictl, env, photo, {"rotate": 180})
+    noctalia.reject_set = "busy"
+    code, _, stderr = run_cli(walictl, ["later"])
+    assert code == 1 and "busy" in stderr
+    assert len(renders_of(walictl, photo)) == 2 and first.exists(), "a rejected selection prunes nothing"
+    noctalia.reject_set = None
+    assert run_cli(walictl, ["later"])[0] == 0
+    assert renders_of(walictl, photo) == [noctalia.default] and not first.exists()
+
+
+def test_capture_navigation_renders_variants(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path
+) -> None:
+    enable_edits(env)
+    recipe_for(walictl, env, "PXL_20210609_120000000", {"anchor": "top"})
+    assert run_cli(walictl, ["later"]) == (0, "later: PXL_20210609_120000000\n", "")
+    default = noctalia.default
+    assert default is not None
+    assert default.stem == "PXL_20210609_120000000"
+    assert default.is_relative_to(walictl.variant_dir("PXL_20210609_120000000"))
+    assert magick_calls(fake_magick)[-1][1:5] == ["-crop", "3440x1440+0+0", "+repage", "-quality"]
+    assert magick_calls(fake_magick)[-1][-1].endswith(".tmp.jpg"), "renders go to a temp file first"
+
+
+def test_render_failure_fails_selection_and_leaves_wallpaper(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    enable_edits(env)
+    recipe_for(walictl, env, "PXL_20210609_120000000", {"rotate": 90})
+    monkeypatch.setenv("FAKE_MAGICK_FAIL", "1")
+    code, stdout, stderr = run_cli(walictl, ["later"])
+    assert (code, stdout, stderr) == (1, "", "magick failed: boom\n")
+    assert noctalia.default == env["wallpapers"] / "PXL_20210608_111152739.jpg"
+    assert [e.origin for e in load_history(walictl).entries] == ["observed"]
+
+
+def test_current_reports_the_keyed_variant_without_rendering(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path
+) -> None:
+    enable_edits(env)
+    photo = "PXL_20210608_111152739"
+    recipe_for(walictl, env, photo, {"rotate": 90})
+    assert json.loads(run_cli(walictl, ["current", "--json"])[1])["variant_path"] is None
+    assert magick_calls(fake_magick) == []
+    config = walictl.load_config(walictl.config_path())
+    rendered = walictl.ensure_variant(config, walictl.scan_library(config.wallpaper_dir), photo)
+    assert json.loads(run_cli(walictl, ["current", "--json"])[1])["variant_path"] == str(rendered)
+
+
+def test_variant_commands_require_edits_file(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia) -> None:
+    for argv in (["variant", "show", "--json"], ["variant", "preview"], ["variant", "apply", "--set", "rotate=90"], ["variant", "reset"]):
+        code, _, stderr = run_cli(walictl, argv)
+        assert (code, stderr) == (1, "config key edits_file is required\n"), argv
+
+
+def test_variant_show_reports_effective_recipe(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path) -> None:
+    enable_edits(env)
+    payload = json.loads(run_cli(walictl, ["variant", "show", "--json"])[1])
+    assert payload == {"ok": True, "id": "PXL_20210608_111152739", "edited": False, "recipe": walictl.RECIPE_DEFAULTS, "variant_path": None}
+    recipe_for(walictl, env, "PXL_20220402_162957459", {"rotate": 90, "anchor": "top"})
+    payload = json.loads(run_cli(walictl, ["variant", "show", "PXL_20220402_162957459", "--json"])[1])
+    assert payload["edited"] is True and payload["recipe"] == {**walictl.RECIPE_DEFAULTS, "rotate": 90, "anchor": "top"}
+    assert payload["variant_path"] is None and magick_calls(fake_magick) == [], "show never renders"
+
+
+def test_variant_preview_writes_keyed_file_and_prunes(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path) -> None:
+    enable_edits(env)
+    photo = "PXL_20210608_111152739"
+    code, first, stderr = run_cli(walictl, ["variant", "preview", "--set", "brightness=10"])
+    assert (code, stderr) == (0, "")
+    first_path = Path(first.strip())
+    assert first_path.parent == walictl.preview_dir(photo) and first_path.suffix == ".jpg"
+    assert magick_calls(fake_magick)[-1][:4] == [str(env["wallpapers"] / f"{photo}.jpg"), "-resize", "560x", "-brightness-contrast"]
+    assert magick_calls(fake_magick)[-1][-1].endswith(".tmp.jpg"), "previews render to a temp file first"
+    second_path = Path(run_cli(walictl, ["variant", "preview", "--set", "brightness=20"])[1].strip())
+    assert second_path != first_path
+    assert [p.name for p in first_path.parent.iterdir()] == [second_path.name], "older previews for the id are pruned"
+    assert Path(run_cli(walictl, ["variant", "preview", "--set", "brightness=20"])[1].strip()) == second_path
+    assert len(magick_calls(fake_magick)) == 2, "an existing preview is reused"
+    code, _, stderr = run_cli(walictl, ["variant", "preview", "--set", "rotate=45"])
+    assert (code, stderr) == (1, "rotate must be one of 0, 90, 180, 270\n")
+
+
+def test_variant_preview_failure_is_never_reused(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    enable_edits(env)
+    monkeypatch.setenv("FAKE_MAGICK_PARTIAL", "1")
+    code, _, stderr = run_cli(walictl, ["variant", "preview", "--set", "blur=2"])
+    assert (code, stderr) == (1, "magick failed: died\n")
+    assert not list(walictl.preview_dir("PXL_20210608_111152739").iterdir()), "a partial preview is removed"
+    monkeypatch.delenv("FAKE_MAGICK_PARTIAL")
+    assert run_cli(walictl, ["variant", "preview", "--set", "blur=2"])[0] == 0
+    assert len(magick_calls(fake_magick)) == 2, "the retry renders again"
+
+
+def test_variant_preview_anchor_needs_output(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path) -> None:
+    enable_edits(env, output=None)
+    code, _, stderr = run_cli(walictl, ["variant", "preview", "--set", "anchor=top"])
+    assert (code, stderr) == (1, "config key edits.output is required for anchor\n")
+    assert run_cli(walictl, ["variant", "preview", "--set", "blur=2"])[0] == 0
+    assert "-crop" not in magick_calls(fake_magick)[-1], "no output: uncropped preview"
+
+
+def test_variant_apply_renders_saves_and_resets_displayed_photo(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path
+) -> None:
+    enable_edits(env)
+    run_cli(walictl, ["random", "--seed", "3"])
+    picked = load_history(walictl).entries[1].id
+    code, stdout, stderr = run_cli(walictl, ["variant", "apply", "--set", "rotate=90", "--set", "brightness=5"])
+    assert (code, stdout, stderr) == (0, f"applied {picked}\n", "")
+    edits = walictl.EditsStore.load(env["wallpapers"].parent / "edits.json")
+    assert edits.get(picked) == {"rotate": 90, "brightness": 5}
+    first = noctalia.default
+    assert first is not None and first.stem == picked and first.is_relative_to(walictl.variant_dir(picked))
+    history = load_history(walictl)
+    assert [e.id for e in history.entries] == ["PXL_20210608_111152739", picked] and history.cursor == 1
+    assert history.entries[1].path == str(first), "the entry's path follows the variant"
+    assert run_cli(walictl, ["observe"])[1] == f"unchanged {picked}\n", "no duplicate observed entry"
+    code, stdout, _ = run_cli(walictl, ["variant", "apply", "--set", "rotate=180"])
+    assert (code, stdout) == (0, f"applied {picked}\n")
+    second = noctalia.default
+    assert second is not None and second != first and second.stem == picked
+    assert noctalia.calls[-1] == ["noctalia", "msg", "wallpaper-set", str(second)]
+    assert renders_of(walictl, picked) == [second] and not first.exists()
+    assert load_history(walictl).entries[1].path == str(second)
+    calls = len(magick_calls(fake_magick))
+    assert run_cli(walictl, ["variant", "apply", "--set", "rotate=180"])[0] == 0
+    assert len(magick_calls(fake_magick)) == calls and noctalia.calls[-1] == ["noctalia", "msg", "wallpaper-set", str(second)]
+    code, stdout, _ = run_cli(walictl, ["variant", "apply", "--set", "rotate=0"])
+    assert (code, stdout) == (0, f"reset {picked}\n")
+    assert walictl.EditsStore.load(env["wallpapers"].parent / "edits.json").get(picked) is None
+    assert noctalia.default == env["wallpapers"] / f"{picked}.jpg"
+    assert renders_of(walictl, picked) == []
+    assert load_history(walictl).entries[1].path == str(env["wallpapers"] / f"{picked}.jpg")
+
+
+def test_variant_apply_on_another_photo_does_not_touch_the_wallpaper(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path
+) -> None:
+    enable_edits(env)
+    code, stdout, _ = run_cli(walictl, ["variant", "apply", "PXL_20220402_162957459", "--set", "anchor=bottom"])
+    assert (code, stdout) == (0, "applied PXL_20220402_162957459\n")
+    assert noctalia.default == env["wallpapers"] / "PXL_20210608_111152739.jpg"
+    assert len(renders_of(walictl, "PXL_20220402_162957459")) == 1
+    assert not any(call[2] == "wallpaper-set" for call in noctalia.calls)
+    assert run_cli(walictl, ["variant", "apply", "PXL_20220402_162957459", "--set", "anchor=top"])[0] == 0
+    assert len(renders_of(walictl, "PXL_20220402_162957459")) == 1, "a photo that is not displayed is pruned at once"
+    code, _, stderr = run_cli(walictl, ["variant", "apply", "nope", "--set", "rotate=90"])
+    assert (code, stderr) == (1, "unknown photo id: nope\n")
+
+
+def test_variant_apply_failures_leave_state_consistent(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    enable_edits(env)
+    edits = env["wallpapers"].parent / "edits.json"
+    photo = "PXL_20210608_111152739"
+    assert run_cli(walictl, ["variant", "apply", "--set", "rotate=90"])[0] == 0
+    first = noctalia.default
+    monkeypatch.setenv("FAKE_MAGICK_FAIL", "1")
+    code, _, stderr = run_cli(walictl, ["variant", "apply", "--set", "rotate=180"])
+    assert (code, stderr) == (1, "magick failed: boom\n")
+    assert walictl.EditsStore.load(edits).get(photo) == {"rotate": 90}
+    assert renders_of(walictl, photo) == [first]
+    monkeypatch.delenv("FAKE_MAGICK_FAIL")
+    edits.chmod(0o444)
+    edits.parent.chmod(0o555)
+    try:
+        code, _, stderr = run_cli(walictl, ["variant", "apply", "--set", "rotate=270"])
+    finally:
+        edits.parent.chmod(0o755)
+        edits.chmod(0o644)
+    assert code == 1 and "edits.json" in stderr
+    assert walictl.EditsStore.load(edits).get(photo) == {"rotate": 90}
+    assert renders_of(walictl, photo) == [first]
+    assert not list(walictl.variant_dir(photo).rglob("*.tmp.jpg"))
+    noctalia.reject_set = "busy"
+    code, _, stderr = run_cli(walictl, ["variant", "apply", "--set", "rotate=270"])
+    assert code == 1 and "busy" in stderr
+    assert walictl.EditsStore.load(edits).get(photo) == {"rotate": 270}
+    assert len(renders_of(walictl, photo)) == 2 and first is not None and first.exists()
+    assert noctalia.default == first
+
+
+def test_variant_reset_keeps_renders_when_wallpaper_change_is_rejected(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path
+) -> None:
+    enable_edits(env)
+    photo = "PXL_20210608_111152739"
+    assert run_cli(walictl, ["variant", "apply", "--set", "rotate=90"])[0] == 0
+    rendered = noctalia.default
+    noctalia.reject_set = "busy"
+    code, _, stderr = run_cli(walictl, ["variant", "reset"])
+    assert code == 1 and "busy" in stderr
+    assert walictl.EditsStore.load(env["wallpapers"].parent / "edits.json").get(photo) is None
+    assert rendered is not None and rendered.exists(), "the displayed file is never deleted before a replacement succeeds"
+    assert run_cli(walictl, ["later"])[0] == 1
+    assert rendered.exists()
+    noctalia.reject_set = None
+    assert run_cli(walictl, ["later"])[0] == 0
+    assert run_cli(walictl, ["earlier"])[0] == 0
+    assert noctalia.default == env["wallpapers"] / f"{photo}.jpg"
+    assert renders_of(walictl, photo) == []
+    code, _, stderr = run_cli(walictl, ["variant", "reset"])
+    assert (code, stderr) == (1, f"no recipe: {photo}\n")
+
+
+def test_variant_apply_holds_the_history_lock(
+    walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path
+) -> None:
+    import threading
+
+    enable_edits(env)
+    release = threading.Event()
+    taken = threading.Event()
+
+    def holder() -> None:
+        with walictl.locked(walictl.history_lock()):
+            taken.set()
+            release.wait(2)
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+    assert taken.wait(2)
+    try:
+        walictl_fast = load_walictl()
+        normal_lock = walictl_fast.locked
+
+        def short_lock(path: Path, timeout: float = 10.0) -> Any:
+            return normal_lock(path, timeout=0.2)
+
+        walictl_fast.locked = short_lock  # type: ignore[assignment]
+        for argv in (["variant", "apply", "--set", "rotate=90"], ["variant", "reset"]):
+            code, _, stderr = run_cli(walictl_fast, argv)
+            assert code == 1 and stderr.startswith("timed out waiting for"), argv
+        assert magick_calls(fake_magick) == [], "no render before the history lock is held"
+    finally:
+        release.set()
+        thread.join(2)
+    assert not thread.is_alive()
 
 
 @pytest.mark.parametrize("version", [True, 1.0])
@@ -906,6 +1532,18 @@ def ratings_of(walictl: ModuleType, favorites: tuple[str, ...] = (), hidden: tup
     for photo in hidden:
         store.add_hidden(photo, "T")
     return store
+
+
+def recipe_for(walictl: ModuleType, env: dict[str, Path], photo: str, recipe: dict[str, object]) -> None:
+    edits = env["wallpapers"].parent / "edits.json"
+    store = walictl.EditsStore.load(edits)
+    store.set(photo, recipe, "T")
+    store.save(edits)
+
+
+def renders_of(walictl: ModuleType, photo: str) -> list[Path]:
+    root = walictl.variant_dir(photo)
+    return sorted(p for p in root.glob("*/*.jpg")) if root.is_dir() else []
 
 
 def test_weights_zero_boosts_are_uniform_except_recent(walictl: ModuleType) -> None:
@@ -1552,3 +2190,16 @@ def test_import_favorites_force_preserves_hidden_and_refuses_conflicts(
 def test_import_favorites_fails_on_missing_source(walictl: ModuleType, env: dict[str, Path], tmp_path: Path) -> None:
     code, _, stderr = run_cli(walictl, ["import-favorites", str(tmp_path / "nope.txt")])
     assert (code, stderr) == (1, f"favorites source not found: {tmp_path / 'nope.txt'}\n")
+
+
+def test_import_favorites_rejects_bad_ids_and_preserves_the_file(
+    walictl: ModuleType, env: dict[str, Path], tmp_path: Path
+) -> None:
+    store = walictl.Ratings(favorites={}, hidden={})
+    store.add_favorite("old", "T")
+    store.save(env["favorites"])
+    source = tmp_path / "favorites.txt"
+    source.write_text("x.jpg\n/\n")
+    code, _, stderr = run_cli(walictl, ["import-favorites", "--force", str(source)])
+    assert code == 1 and "imported photo id must be a single file name stem" in stderr
+    assert walictl.Ratings.load(env["favorites"]).favorite_ids() == ["old"]

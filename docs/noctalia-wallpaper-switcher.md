@@ -27,6 +27,9 @@ verify the exported effective config has wallpaper automation disabled.
 |---|---|
 | `$XDG_CONFIG_HOME/wali/config.toml` | Per-host config, linked by dotfiles' setup.sh from its `wali/<hostname>/config.toml` |
 | `<favorites_file>` | Favorites and hidden photos keyed by photo id (version 2), synced with the backgrounds directory |
+| `<edits_file>` | Per-photo edit recipes (`edits.json`), synced beside favorites; optional |
+| `$XDG_CACHE_HOME/wali/variants/<id>/<key>/` | One rendered variant per recipe/output/source key, per host |
+| `$XDG_CACHE_HOME/wali/preview/<id>/` | Downscaled previews for the panel's edit mode |
 | `$XDG_STATE_HOME/wali/history.json` | Per-host history with a cursor |
 | `$XDG_STATE_HOME/wali/phone.json` | Which source each phone render was made from; rebuilt when missing |
 | `<phone.dir>` | The mirrored phone folder under Dropbox; `walictl` owns every `*.jpg` in it |
@@ -52,6 +55,10 @@ walictl edit                # GIMP on the original, else on the display file
 walictl observe             # hook entry point
 walictl import-favorites <favorites.txt>
 walictl phone sync          # mirror favorites into [phone] dir; --dry-run, --force, --json
+walictl variant show [<id>] --json          # effective recipe and cached variant path
+walictl variant preview [<id>] --set k=v..  # 560px preview of the settings; prints its path
+walictl variant apply [<id>] --set k=v..    # replace the recipe, render, show it when displayed
+walictl variant reset [<id>]                # drop the recipe and its renders
 ```
 
 `Super+N` toggles the Wali Panel. Inside it, `h/l` or Left/Right walks history
@@ -59,8 +66,8 @@ walictl phone sync          # mirror favorites into [phone] dir; --dry-run, --fo
 selects the earlier/later photo by capture time. `f` or Space toggles
 favorite, `x` hides (or restores) the photo, `shift+x` opens the hidden list,
 `e` edits, `y` copies the source path (display path if no source exists),
-`r` or a click on the photo samples, `?` or `F1` toggles help, and Escape
-closes the panel.
+`a` toggles edit mode, `r` or a click on the photo samples, `?` or `F1`
+toggles help, and Escape closes the panel.
 
 Without opening the panel, `Super+Alt+Left/Right` runs previous/next,
 `Super+Alt+R` samples, and `Super+Alt+F` toggles favorite. Each reports the photo
@@ -124,5 +131,26 @@ pattern, and a `*.jpg.tmp` caught mid-render is deleted on the next pass).
 Muzei's *My Photos* source, given that folder with *Add a folder*, rotates
 through it with its blur, dim, and grey effects at 0 — the renders are
 already the wallpaper.
+
+Quick edits are recipes: `rotate` (0/90/180/270), `brightness`, `contrast`
+(-100..100), `saturation` (0..200), `hue` (-180..180), `blur` (0..20), `noise`,
+`bloom` (0..100), and `anchor` (center/top/bottom/left/right, a crop to the
+output aspect from that edge; needs `[edits] output = "WxH"` in the host
+config). Set `edits_file` to turn them on:
+
+```toml
+edits_file = "~/d/linux/backgrounds/edits.json"
+
+[edits]
+output = "3440x1440"
+```
+
+`walictl` renders a recipe with `magick` into a per-host cache the first time
+the photo is selected there; each distinct recipe, output size, or library
+file gets its own keyed path, because Noctalia ignores a wallpaper change to
+the path it already shows. Stale renders are removed only after a wallpaper
+change succeeds. `apply` and `reset` re-set the wallpaper when the photo is
+on screen and rewrite its history entry's path, so history keeps one entry
+per photo.
 
 Design: `docs/specs/2026-09-07-wallpaper-management-redesign-design.md` in the dotfiles repo, where the redesign was done.

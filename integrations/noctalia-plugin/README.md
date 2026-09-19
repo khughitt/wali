@@ -27,6 +27,7 @@ In niri, `Super+N` toggles the panel and gives it keyboard focus immediately.
 | `x` | Hide the photo (never sampled again); restore it when it is already hidden |
 | `shift+x` | Toggle the hidden list in the preview area |
 | `e` | Edit in GIMP |
+| `a` | Toggle edit mode (adjustments) |
 | `y` | Copy source path, or display path if unavailable |
 | `?` / `F1` | Toggle shortcut help in the preview area |
 | Escape | Close panel |
@@ -69,6 +70,16 @@ is hidden") stays in the caption. Right-click the button, or press `shift+x`,
 for the hidden list: a scrolling set of thumbnails with a Restore button each.
 A photo reached through history that is hidden shows `hidden` in the caption
 and turns the button into Restore.
+
+Adjust (`adjustments`, `a`) opens edit mode for the photo on screen: the frame
+shrinks to a preview, and a scrolling column of sliders (brightness, contrast,
+saturation, hue, blur, noise, bloom), rotate and anchor toggles, and
+Reset / Cancel / Apply take the rest of the panel. Every change asks
+`walictl variant preview` for a 560 px render and paints it into the frame;
+changes made while a preview runs are sent once, after it returns. Apply runs
+`walictl variant apply` for the photo the session started on, even if the
+wallpaper changed meanwhile, then re-reads the metadata. Cancel discards the
+draft. Navigation keys are ignored while editing; `a` or Cancel leaves.
 
 Noctalia hot-reloads the `.luau` files. A change to `plugin.toml` (for example the
 panel size) needs `noctalia msg plugins disable khughitt/wali-panel` followed by

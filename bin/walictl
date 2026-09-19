@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -231,10 +232,6 @@ def scan_library(directory: Path) -> dict[str, Path]:
     return dict(sorted(chosen.items()))
 
 
-def resolve_variant(config: Config, photo_id: str) -> Path | None:
-    return None  # replaced by current_variant once recipes exist
-
-
 def resolve_source(config: Config, photo_id: str) -> Path | None:
     taken = capture_date(photo_id)
     if config.archive_root is None or taken is None:
@@ -244,13 +241,9 @@ def resolve_source(config: Config, photo_id: str) -> Path | None:
 
 
 def display_path(config: Config, library: dict[str, Path], photo_id: str) -> Path:
-    variant = resolve_variant(config, photo_id)
-    if variant is not None:
-        return variant
-    try:
-        return library[photo_id]
-    except KeyError as exc:
-        raise WalictlError(f"unknown photo id: {photo_id}") from exc
+    if photo_id not in library:
+        raise WalictlError(f"unknown photo id: {photo_id}")
+    return ensure_variant(config, library, photo_id) or library[photo_id]
 
 
 # --- shared helpers ---------------------------------------------------------
@@ -321,6 +314,7 @@ def _rating_entries(payload: dict[str, object], key: str, path: Path) -> dict[st
         raise WalictlError(f"favorites file has no {key} object: {path}")
     checked: dict[str, dict[str, str]] = {}
     for photo, value in entries.items():
+        check_photo_id(photo, "favorites file id")
         if not isinstance(value, dict) or not isinstance(value.get("added"), str):
             raise WalictlError(f"malformed {key} entry: {photo} in {path}")
         checked[str(photo)] = {"added": value["added"]}
@@ -398,7 +392,7 @@ def phone_manifest_path() -> Path:
     return state_dir() / "phone.json"
 
 
-def source_identity(source: Path, output: tuple[int, int]) -> dict[str, object]:
+def phone_source_identity(source: Path, output: tuple[int, int]) -> dict[str, object]:
     stat = source.stat()
     return {"source": str(source), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "output": f"{output[0]}x{output[1]}"}
 
@@ -454,7 +448,7 @@ def phone_plan(
         source = resolve_source(config, photo) or library.get(photo)
         if source is None:
             plan.skipped.append(photo)
-        elif photo in existing and not force and manifest.renders.get(photo) == source_identity(source, phone.output):
+        elif photo in existing and not force and manifest.renders.get(photo) == phone_source_identity(source, phone.output):
             plan.kept.append(photo)
         else:
             plan.render.append((photo, source))
@@ -509,6 +503,335 @@ class PhoneManifest:
 
     def save(self, path: Path) -> None:
         write_json_atomic(path, {"version": PHONE_MANIFEST_VERSION, "renders": self.renders})
+
+
+# --- recipes ----------------------------------------------------------------
+
+EDITS_VERSION = 1
+ROTATIONS: tuple[int, ...] = (0, 90, 180, 270)
+ANCHORS: tuple[str, ...] = ("center", "top", "bottom", "left", "right")
+RECIPE_DEFAULTS: dict[str, int | str] = {
+    "rotate": 0, "brightness": 0, "contrast": 0, "saturation": 100, "hue": 0,
+    "blur": 0, "noise": 0, "bloom": 0, "anchor": "center",
+}
+RECIPE_RANGES: dict[str, tuple[int, int]] = {
+    "brightness": (-100, 100), "contrast": (-100, 100), "saturation": (0, 200), "hue": (-180, 180),
+    "blur": (0, 20), "noise": (0, 100), "bloom": (0, 100),
+}
+
+
+def edits_lock() -> Path:
+    return state_dir() / "edits.lock"
+
+
+def variants_lock() -> Path:
+    return state_dir() / "variants.lock"
+
+
+def _check_recipe_value(key: str, value: object) -> int | str:
+    if key == "anchor":
+        if not isinstance(value, str) or value not in ANCHORS:
+            raise WalictlError(f"anchor must be one of {', '.join(ANCHORS)}")
+        return value
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise WalictlError(f"{key} must be an integer")
+    if key == "rotate":
+        if value not in ROTATIONS:
+            raise WalictlError("rotate must be one of " + ", ".join(str(r) for r in ROTATIONS))
+        return value
+    low, high = RECIPE_RANGES[key]
+    if not low <= value <= high:
+        raise WalictlError(f"{key} must be between {low} and {high}")
+    return value
+
+
+def validate_recipe(raw: object, label: str) -> dict[str, int | str]:
+    """A recipe with only non-default keys, or an error prefixed with `label`."""
+    if not isinstance(raw, dict):
+        raise WalictlError(f"{label}: recipe must be an object")
+    recipe: dict[str, int | str] = {}
+    for key, value in raw.items():
+        if key not in RECIPE_DEFAULTS:
+            raise WalictlError(f"{label}: unknown recipe key: {key}")
+        try:
+            checked = _check_recipe_value(key, value)
+        except WalictlError as exc:
+            raise WalictlError(f"{label}: {exc}") from exc
+        if checked != RECIPE_DEFAULTS[key]:
+            recipe[key] = checked
+    return recipe
+
+
+def parse_settings(settings: list[str]) -> dict[str, int | str]:
+    raw: dict[str, object] = {}
+    for setting in settings:
+        key, sep, text = setting.partition("=")
+        if not sep:
+            raise WalictlError(f"settings take the form key=value: {setting}")
+        if key in raw:
+            raise WalictlError(f"duplicate setting: {key}")
+        if key not in RECIPE_DEFAULTS:
+            raise WalictlError(f"unknown recipe key: {key}")
+        if key == "anchor":
+            raw[key] = text
+        else:
+            try:
+                raw[key] = int(text)
+            except ValueError as exc:
+                raise WalictlError(f"{key} must be an integer") from exc
+    try:
+        return validate_recipe(raw, "settings")
+    except WalictlError as exc:
+        raise WalictlError(str(exc).removeprefix("settings: ")) from exc
+
+
+def effective(recipe: dict[str, int | str]) -> dict[str, int | str]:
+    return {**RECIPE_DEFAULTS, **recipe}
+
+
+def canonical(recipe: dict[str, int | str]) -> str:
+    return json.dumps(recipe, sort_keys=True, separators=(",", ":"))
+
+
+@dataclass
+class EditsStore:
+    edits: dict[str, dict[str, object]]
+
+    @classmethod
+    def load(cls, path: Path) -> EditsStore:
+        payload = read_json(path, "edits file")
+        if payload is None:
+            return cls(edits={})
+        version = payload.get("version")
+        if type(version) is not int or version != EDITS_VERSION:
+            raise WalictlError(f"unsupported edits version in {path}: {version!r}")
+        entries = payload.get("edits")
+        if not isinstance(entries, dict):
+            raise WalictlError(f"edits file has no edits object: {path}")
+        checked: dict[str, dict[str, object]] = {}
+        for photo, value in entries.items():
+            check_photo_id(photo, "edits file id")
+            if not isinstance(value, dict):
+                raise WalictlError(f"malformed edits entry: {photo}")
+            if not isinstance(value.get("updated"), str):
+                raise WalictlError(f"malformed edits entry: {photo}: missing updated")
+            recipe = validate_recipe({k: v for k, v in value.items() if k != "updated"}, f"malformed edits entry: {photo}")
+            if not recipe:
+                continue  # an all-default recipe is not stored
+            checked[str(photo)] = {**recipe, "updated": value["updated"]}
+        return cls(edits=checked)
+
+    def save(self, path: Path) -> None:
+        write_json_atomic(path, {"version": EDITS_VERSION, "edits": self.edits})
+
+    def get(self, photo_id: str) -> dict[str, int | str] | None:
+        entry = self.edits.get(photo_id)
+        if entry is None:
+            return None
+        return {k: v for k, v in entry.items() if k != "updated"}  # type: ignore[misc]
+
+    def set(self, photo_id: str, recipe: dict[str, int | str], now: str) -> None:
+        if not recipe:
+            self.edits.pop(photo_id, None)
+            return
+        self.edits[photo_id] = {**recipe, "updated": now}
+
+    def remove(self, photo_id: str) -> bool:
+        return self.edits.pop(photo_id, None) is not None
+
+
+# --- rendering --------------------------------------------------------------
+
+PREVIEW_WIDTH = 560
+BLOOM_RADIUS = 25.0
+
+
+def _num(value: float) -> str:
+    """Compact decimal for magick: 3 → '3', 1.628 → '1.628'."""
+    text = f"{value:.4g}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def output_required(recipe: dict[str, int | str], output: tuple[int, int] | None) -> None:
+    if recipe.get("anchor", "center") != "center" and output is None:
+        raise WalictlError("config key edits.output is required for anchor")
+
+
+def image_size(path: Path) -> tuple[int, int]:
+    result = _magick(["identify", "-format", "%w %h", str(path)])
+    try:
+        width, height = (int(part) for part in result.stdout.split())
+    except ValueError as exc:
+        raise WalictlError(f"magick identify returned no size for {path}: {result.stdout.strip()!r}") from exc
+    return width, height
+
+
+def crop_box(width: int, height: int, output: tuple[int, int], anchor: str) -> tuple[int, int, int, int]:
+    """The largest output-aspect box inside width×height, placed at the anchor."""
+    out_w, out_h = output
+    if width * out_h >= height * out_w:
+        crop_w, crop_h = height * out_w // out_h, height
+    else:
+        crop_w, crop_h = width, width * out_h // out_w
+    x = {"left": 0, "right": width - crop_w}.get(anchor, (width - crop_w) // 2)
+    y = {"top": 0, "bottom": height - crop_h}.get(anchor, (height - crop_h) // 2)
+    return crop_w, crop_h, x, y
+
+
+def magick_argv(
+    source: Path, recipe: dict[str, int | str], output: tuple[int, int] | None, dest: Path, preview_width: int | None
+) -> list[str]:
+    """One magick invocation: rotate → (resize) → tone → blur → noise → bloom → crop."""
+    values = effective(recipe)
+    rotate, anchor = int(values["rotate"]), str(values["anchor"])
+    argv = ["magick", str(source)]
+    width, height = (0, 0)
+    if preview_width is not None or anchor != "center":
+        width, height = image_size(source)
+        if rotate in (90, 270):
+            width, height = height, width
+    if rotate:
+        argv += ["-rotate", str(rotate)]
+    scale = 1.0
+    if preview_width is not None:
+        scale = preview_width / width
+        argv += ["-resize", f"{preview_width}x"]
+        width, height = preview_width, round(height * scale)
+    brightness, contrast = int(values["brightness"]), int(values["contrast"])
+    if brightness or contrast:
+        argv += ["-brightness-contrast", f"{brightness}x{contrast}"]
+    saturation, hue = int(values["saturation"]), int(values["hue"])
+    if saturation != 100 or hue:
+        argv += ["-modulate", f"100,{saturation},{_num(100 + hue / 1.8)}"]
+    if values["blur"]:
+        argv += ["-blur", f"0x{_num(int(values['blur']) * scale)}"]
+    if values["bloom"]:
+        argv += [
+            "(", "+clone", "-blur", f"0x{_num(BLOOM_RADIUS * scale)}",
+            "-evaluate", "multiply", _num(int(values["bloom"]) / 100), ")",
+            "-compose", "screen", "-composite",
+        ]
+    # Noise goes last among the pixel ops: a blur reading +noise output leaves
+    # black blocks at preview scale (magick cache quirk), and grain belongs on top.
+    if values["noise"]:
+        argv += ["-attenuate", _num(int(values["noise"]) / 100), "+noise", "Gaussian"]
+    crop = output is not None and (anchor != "center" or preview_width is not None)
+    if crop:
+        assert output is not None
+        crop_w, crop_h, x, y = crop_box(width, height, output, anchor)
+        argv += ["-crop", f"{crop_w}x{crop_h}+{x}+{y}", "+repage"]
+    return argv + ["-quality", "92", str(dest)]
+
+
+def _magick(args: list[str]) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(["magick", *args], check=False, capture_output=True, text=True)
+    except FileNotFoundError as exc:
+        raise WalictlError("magick command not found") from exc
+    if result.returncode != 0:
+        raise WalictlError(f"magick failed: {' '.join(result.stderr.split()) or result.returncode}")
+    return result
+
+
+def render(
+    source: Path, recipe: dict[str, int | str], output: tuple[int, int] | None, dest: Path, preview_width: int | None = None
+) -> None:
+    _magick(magick_argv(source, recipe, output, dest, preview_width)[1:])
+
+
+# --- variant cache ----------------------------------------------------------
+
+
+def source_identity(path: Path) -> dict[str, object]:
+    stat = path.stat()
+    return {"path": str(path), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def render_key(recipe: dict[str, int | str], output: tuple[int, int] | None, identity: dict[str, object]) -> str:
+    payload = {"recipe": recipe, "output": list(output) if output else None, "source": identity}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def render_to_temp(
+    source: Path, recipe: dict[str, int | str], output: tuple[int, int] | None, target_dir: Path,
+    preview_width: int | None = None,
+) -> Path:
+    """Render into a .tmp.jpg beside its future home; the caller publishes or deletes it."""
+    target_dir.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=".render.", suffix=".tmp.jpg", dir=target_dir)
+    os.close(fd)
+    tmp = Path(name)
+    try:
+        render(source, recipe, output, tmp, preview_width)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return tmp
+
+
+def publish_variant(tmp: Path, photo_id: str, key: str) -> Path:
+    target = variant_file(photo_id, key)
+    os.replace(tmp, target)
+    return target
+
+
+def prune_variants(photo_id: str, keep: Path | None) -> None:
+    """Remove every render of the photo except `keep`. Caller holds variants.lock."""
+    root = variant_dir(photo_id)
+    if not root.is_dir():
+        return
+    for keyed in root.iterdir():
+        if keep is not None and keyed == keep.parent:
+            continue
+        for stale in keyed.iterdir():
+            stale.unlink()
+        keyed.rmdir()
+    if not any(root.iterdir()):
+        root.rmdir()
+
+
+def recipe_key(config: Config, library: dict[str, Path], photo_id: str) -> tuple[dict[str, int | str] | None, str | None]:
+    """The photo's recipe and the key of its render on this host.
+
+    The key is None when there is no recipe, and also when the library has no
+    file for the id: a recipe can outlive its photo, and metadata queries must
+    keep answering for the rest of the library.
+    """
+    if config.edits is None:
+        return None, None
+    with locked(edits_lock()):
+        recipe = EditsStore.load(config.edits.file).get(photo_id)
+    if recipe is None:
+        return None, None
+    source = library.get(photo_id)
+    if source is None:
+        return recipe, None
+    return recipe, render_key(recipe, config.edits.output, source_identity(source))
+
+
+def current_variant(config: Config, library: dict[str, Path], photo_id: str) -> Path | None:
+    """The photo's up-to-date render if one exists on disk. Never renders, never deletes."""
+    _recipe, key = recipe_key(config, library, photo_id)
+    if key is None:
+        return None
+    target = variant_file(photo_id, key)
+    return target if target.is_file() else None
+
+
+def ensure_variant(config: Config, library: dict[str, Path], photo_id: str) -> Path | None:
+    """The photo's render, rendering it if missing. Never deletes: pruning waits for a successful set."""
+    recipe, key = recipe_key(config, library, photo_id)
+    if recipe is None:
+        return None
+    if key is None:
+        raise WalictlError(f"unknown photo id: {photo_id}")
+    with locked(variants_lock()):
+        target = variant_file(photo_id, key)
+        if target.is_file():
+            return target
+        output_required(recipe, config.edits.output if config.edits else None)
+        tmp = render_to_temp(library[photo_id], recipe, config.edits.output if config.edits else None, target.parent)
+        return publish_variant(tmp, photo_id, key)
 
 
 # --- history ----------------------------------------------------------------
@@ -684,7 +1007,7 @@ def describe(
     photo = photo_id(displayed)
     taken = capture_date(photo)
     source = resolve_source(ctx.config, photo)
-    variant = resolve_variant(ctx.config, photo)
+    variant = current_variant(ctx.config, library, photo)
     return {
         "ok": True,
         "id": photo,
@@ -709,9 +1032,11 @@ def cmd_current(ctx: Context, args: argparse.Namespace) -> int:
     return 0
 
 
-def replay_path(config: Config, entry: HistoryEntry) -> Path:
-    """Prefer a variant created since the history entry was recorded."""
-    return resolve_variant(config, entry.id) or Path(entry.path)
+def replay_path(config: Config, library: dict[str, Path], entry: HistoryEntry) -> Path:
+    """Resolve a history entry by id: its variant when a recipe exists, else the library file."""
+    if entry.id in library:
+        return ensure_variant(config, library, entry.id) or library[entry.id]
+    return Path(entry.path)
 
 
 def navigate(ctx: Context, action: str, rng: random.Random) -> str:
@@ -728,6 +1053,7 @@ def navigate(ctx: Context, action: str, rng: random.Random) -> str:
             ctx.out.write(f"{'recorded' if changed else 'unchanged'} {current.id}\n")
             return current.id
 
+        library = scan_library(ctx.config.wallpaper_dir)
         delta = (
             -1
             if action == "previous" and history.cursor > 0
@@ -737,14 +1063,15 @@ def navigate(ctx: Context, action: str, rng: random.Random) -> str:
         )
         if delta:
             target = history.entries[history.cursor + delta]
-            displayed = replay_path(ctx.config, target)
+            displayed = replay_path(ctx.config, library, target)
             ctx.noctalia.set_default(displayed)
+            with locked(variants_lock()):
+                prune_variants(target.id, keep=displayed)
             target.path = str(displayed)
             history.cursor += delta
         elif action == "previous":
             raise WalictlError("already at the oldest wallpaper in history")
         else:
-            library = scan_library(ctx.config.wallpaper_dir)
             ratings = Ratings.load(ctx.config.favorites_file)
             if action in ("earlier", "later"):
                 ordered, index = dated_position(library, current.id, ratings.hidden)
@@ -764,6 +1091,8 @@ def navigate(ctx: Context, action: str, rng: random.Random) -> str:
                 picked = sample(weighted, rng, lambda message: print(message, file=ctx.err))
             displayed = display_path(ctx.config, library, picked)
             ctx.noctalia.set_default(displayed)
+            with locked(variants_lock()):
+                prune_variants(picked, keep=displayed)
             history.push(HistoryEntry(ts=utc_now(), id=picked, path=str(displayed), origin=action))
         history.save(path)
         selected = history.current()
@@ -828,7 +1157,7 @@ def _rating_items(ctx: Context, entries: dict[str, dict[str, str]]) -> list[dict
     library = scan_library(ctx.config.wallpaper_dir)
     items = []
     for photo in sorted(entries):
-        path = resolve_variant(ctx.config, photo) or library.get(photo)
+        path = current_variant(ctx.config, library, photo) or library.get(photo)
         source = resolve_source(ctx.config, photo)
         taken = capture_date(photo)
         items.append(
@@ -893,7 +1222,14 @@ def cmd_import_favorites(ctx: Context, args: argparse.Namespace) -> int:
     except FileNotFoundError as exc:
         raise WalictlError(f"favorites source not found: {source}") from exc
     library = scan_library(ctx.config.wallpaper_dir)
-    ids = [photo_id(Path(line)) for line in lines]
+    ids: list[str] = []
+    for line in lines:
+        photo = photo_id(Path(line))
+        try:
+            check_photo_id(photo, "imported photo id")
+        except WalictlError as exc:
+            raise WalictlError(f"{exc} (from {line!r})") from exc
+        ids.append(photo)
     unique_ids = sorted(set(ids))
     dangling = sorted({line for line in lines if not Path(line).expanduser().exists()})
     missing = [photo for photo in unique_ids if photo not in library]
@@ -1002,7 +1338,7 @@ def cmd_phone_sync(ctx: Context, args: argparse.Namespace) -> int:
                 manifest.renders.pop(photo, None)
                 manifest.save(manifest_path)
             for photo, source in plan.render:
-                identity = source_identity(source, phone.output)
+                identity = phone_source_identity(source, phone.output)
                 phone_render(source, phone.dir / f"{photo}.jpg", phone.output)
                 manifest.renders[photo] = identity
                 manifest.save(manifest_path)
@@ -1023,6 +1359,150 @@ def cmd_phone(ctx: Context, args: argparse.Namespace) -> int:
     return PHONE_COMMANDS[args.phone_command](ctx, args)
 
 
+def _edits(ctx: Context) -> EditsConfig:
+    if ctx.config.edits is None:
+        raise WalictlError("config key edits_file is required")
+    return ctx.config.edits
+
+
+def _library_source(library: dict[str, Path], photo: str) -> Path:
+    try:
+        return library[photo]
+    except KeyError as exc:
+        raise WalictlError(f"unknown photo id: {photo}") from exc
+
+
+def update_history_path(displayed_before: Path, photo: str, new_path: Path, now: str) -> None:
+    """Point the current history entry at the photo's new file. Caller holds the history lock."""
+    path = history_path()
+    history = History.load(path)
+    reconcile(history, displayed_before, now)
+    current = history.current()
+    if current is not None and current.id == photo:
+        current.path = str(new_path)
+    history.save(path)
+
+
+def prune_previews(photo: str, keep: Path) -> None:
+    """Remove the other previews of the photo. Caller holds variants.lock."""
+    for stale in preview_dir(photo).iterdir():
+        if stale != keep:
+            stale.unlink()
+
+
+def cmd_variant_show(ctx: Context, args: argparse.Namespace) -> int:
+    edits = _edits(ctx)
+    photo = args.photo_id or _current_id(ctx)
+    library = scan_library(ctx.config.wallpaper_dir)
+    with locked(edits_lock()):
+        recipe = EditsStore.load(edits.file).get(photo)
+    variant = current_variant(ctx.config, library, photo)
+    payload = {
+        "ok": True,
+        "id": photo,
+        "edited": recipe is not None,
+        "recipe": effective(recipe or {}),
+        "variant_path": str(variant) if variant else None,
+    }
+    json.dump(payload, ctx.out)
+    ctx.out.write("\n")
+    return 0
+
+
+def cmd_variant_preview(ctx: Context, args: argparse.Namespace) -> int:
+    edits = _edits(ctx)
+    photo = args.photo_id or _current_id(ctx)
+    recipe = parse_settings(args.set)
+    output_required(recipe, edits.output)
+    source = _library_source(scan_library(ctx.config.wallpaper_dir), photo)
+    key = render_key(recipe, edits.output, source_identity(source))
+    dest = preview_dir(photo) / f"{key[:8]}.jpg"
+    with locked(variants_lock()):
+        if not dest.is_file():
+            tmp = render_to_temp(source, recipe, edits.output, dest.parent, PREVIEW_WIDTH)
+            os.replace(tmp, dest)
+        prune_previews(photo, keep=dest)
+    ctx.out.write(f"{dest}\n")
+    return 0
+
+
+def _reset_variant(ctx: Context, edits: EditsConfig, photo: str, displayed: Path, library: dict[str, Path]) -> None:
+    """Caller holds the history lock. Order: recipe → wallpaper → history → prune (only after success)."""
+    with locked(edits_lock()):
+        store = EditsStore.load(edits.file)
+        if not store.remove(photo):
+            raise WalictlError(f"no recipe: {photo}")
+        store.save(edits.file)
+    if photo == photo_id(displayed):
+        original = _library_source(library, photo)
+        ctx.noctalia.set_default(original)  # raises on rejection: the prune below never runs
+        update_history_path(displayed, photo, original, utc_now())
+    with locked(variants_lock()):
+        prune_variants(photo, keep=None)
+    ctx.out.write(f"reset {photo}\n")
+
+
+def cmd_variant_apply(ctx: Context, args: argparse.Namespace) -> int:
+    edits = _edits(ctx)
+    recipe = parse_settings(args.set)
+    output_required(recipe, edits.output)
+    with locked(history_lock()):
+        displayed = ctx.noctalia.get_default()
+        photo = args.photo_id or photo_id(displayed)
+        library = scan_library(ctx.config.wallpaper_dir)
+        source = _library_source(library, photo)
+        if not recipe:
+            _reset_variant(ctx, edits, photo, displayed, library)
+            return 0
+        key = render_key(recipe, edits.output, source_identity(source))
+        target = variant_file(photo, key)
+        tmp: Path | None = None
+        with locked(variants_lock()):
+            if not target.is_file():
+                tmp = render_to_temp(source, recipe, edits.output, target.parent)
+        try:
+            with locked(edits_lock()):
+                store = EditsStore.load(edits.file)
+                store.set(photo, recipe, utc_now())
+                store.save(edits.file)
+        except BaseException:
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
+            raise
+        if tmp is not None:
+            with locked(variants_lock()):
+                publish_variant(tmp, photo, key)
+        if photo == photo_id(displayed):
+            ctx.noctalia.set_default(target)  # raises on rejection: the prune below never runs
+            update_history_path(displayed, photo, target, utc_now())
+        with locked(variants_lock()):
+            prune_variants(photo, keep=target)
+    ctx.out.write(f"applied {photo}\n")
+    return 0
+
+
+def cmd_variant_reset(ctx: Context, args: argparse.Namespace) -> int:
+    edits = _edits(ctx)
+    with locked(history_lock()):
+        displayed = ctx.noctalia.get_default()
+        photo = args.photo_id or photo_id(displayed)
+        library = scan_library(ctx.config.wallpaper_dir)
+        _reset_variant(ctx, edits, photo, displayed, library)
+    return 0
+
+
+VARIANT_COMMANDS: dict[str, Callable[[Context, argparse.Namespace], int]] = {
+    "show": cmd_variant_show,
+    "preview": cmd_variant_preview,
+    "apply": cmd_variant_apply,
+    "reset": cmd_variant_reset,
+}
+
+
+def cmd_variant(ctx: Context, args: argparse.Namespace) -> int:
+    return VARIANT_COMMANDS[args.action](ctx, args)
+
+
 COMMANDS: dict[str, Callable[[Context, argparse.Namespace], int]] = {
     "current": cmd_current,
     "edit": cmd_edit,
@@ -1040,6 +1520,7 @@ COMMANDS: dict[str, Callable[[Context, argparse.Namespace], int]] = {
     "observe": cmd_observe,
     "phone": cmd_phone,
     "unhide": cmd_unhide,
+    "variant": cmd_variant,
 }
 
 
@@ -1072,6 +1553,20 @@ def build_parser() -> argparse.ArgumentParser:
     neighbors = subparsers.add_parser("neighbors", help="capture-time neighbours of the current photo")
     neighbors.add_argument("--json", action="store_true", required=True)
     neighbors.add_argument("--count", type=int, default=3)
+    variant = subparsers.add_parser("variant", help="per-photo adjustments rendered into a cached variant")
+    actions = variant.add_subparsers(dest="action", required=True)
+    show = actions.add_parser("show", help="the photo's effective recipe")
+    show.add_argument("photo_id", nargs="?", default=None, type=photo_id_arg)
+    show.add_argument("--json", action="store_true", required=True)
+    for name, help_text in (
+        ("preview", "render a 560px-wide preview of the given settings; print its path"),
+        ("apply", "replace the recipe with the given settings, render, and show it when displayed"),
+    ):
+        sub = actions.add_parser(name, help=help_text)
+        sub.add_argument("photo_id", nargs="?", default=None, type=photo_id_arg)
+        sub.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
+    reset = actions.add_parser("reset", help="remove the recipe and its cached render")
+    reset.add_argument("photo_id", nargs="?", default=None, type=photo_id_arg)
     for name, help_text in (
         ("next", "forward in history, else a weighted sample"),
         ("random", "a weighted sample, discarding forward history"),
