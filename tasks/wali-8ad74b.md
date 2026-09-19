@@ -6,9 +6,9 @@ priority: 2
 size: m
 complexity: high
 process: planned
-owner: main
+owner: phone-sync
 created: 2026-09-19T11:25:22Z
-updated: 2026-09-19T12:16:19Z
+updated: 2026-09-19T12:30:56Z
 started: 2026-09-19T12:13:30Z
 depends: [wali-0b4022]
 parent: wali-51adcc
@@ -28,3 +28,6 @@ Settle transport (Dropbox folder mirror vs. rsync to Termux over the tailnet), c
 - 2026-09-19T12:16:19Z (phone-sync): design drafted at docs/specs/2026-09-19-phone-sync-design.md (untracked by policy: git info/exclude); waiting on user review before the plan
 - 2026-09-19T12:16:19Z (phone-sync): parked (waiting on user, review): review the design spec; on approval, invoke writing-plans for the implementation plan
   provenance: {"harness_session":"claude-code:fa1ebf0a-db9b-4904-8ab3-9cdbaae58690","harness_session_source":"CLAUDE_CODE_SESSION_ID"}
+- 2026-09-19T12:30:56Z (phone-sync): resumed
+  provenance: {"harness_session":"claude-code:fa1ebf0a-db9b-4904-8ab3-9cdbaae58690","harness_session_source":"CLAUDE_CODE_SESSION_ID"}
+- 2026-09-19T12:30:56Z (phone-sync): review round 1: 4 findings taken — ratings file must exist (missing ≠ empty), a state-dir manifest records source identity + output (fallback→original and output changes re-render), dotfiles wiring is an explicit dots piece (per-unit ln_s, titan-only enable), .nomedia created in the Dropbox folder since download mirror deletes device-only files
