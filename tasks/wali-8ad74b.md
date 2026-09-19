@@ -38,3 +38,5 @@ Settle transport (Dropbox folder mirror vs. rsync to Termux over the tailnet), c
   provenance: {"harness_session":"claude-code:fa1ebf0a-db9b-4904-8ab3-9cdbaae58690","harness_session_source":"CLAUDE_CODE_SESSION_ID"}
 - 2026-09-19T12:35:49Z (phone-sync): review round 2: spec approved for planning with two clarifications applied — ratings must fail on the read itself (Ratings.load required=True, no exists() pre-check); manifest guarantee is recovery on mismatch, not atomicity, with interruption tests between the two writes
 - 2026-09-19T12:42:33Z (phone-sync): plan drafted at docs/plans/2026-09-19-phone-sync.md (untracked by policy), six step children wali-59e9ad→756c72→3f1e03→7f84a5→2f951f→4e5921 chained by dep; dots-edcbef holds the dotfiles wiring and gates the goal and Task 6
+- 2026-09-19T12:42:33Z (phone-sync): parked (waiting on user, review): review the implementation plan; on approval, execute Tasks 1-5 in .worktrees/phone-sync (subagent-driven), then Task 6 on titan
+  provenance: {"harness_session":"claude-code:fa1ebf0a-db9b-4904-8ab3-9cdbaae58690","harness_session_source":"CLAUDE_CODE_SESSION_ID"}
