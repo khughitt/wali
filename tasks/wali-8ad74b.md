@@ -48,3 +48,5 @@ Settle transport (Dropbox folder mirror vs. rsync to Termux over the tailnet), c
 - 2026-09-19T12:56:13Z (phone-sync): resumed
   provenance: {"harness_session":"claude-code:fa1ebf0a-db9b-4904-8ab3-9cdbaae58690","harness_session_source":"CLAUDE_CODE_SESSION_ID"}
 - 2026-09-19T12:56:13Z (phone-sync): plan review round 2: temporary is target.stem + .jpg.tmp (name+suffix doubled .jpg); timer activation now requires dots-edcbef landed, setup.sh --only systemd to create the links, and ~/bin/walictl itself passing phone sync --dry-run with no substitute path
+- 2026-09-19T12:56:13Z (phone-sync): parked (waiting on user, review): re-review the plan's Task 3 tmp naming and Task 6 activation; on approval execute Tasks 1-5 in .worktrees/phone-sync
+  provenance: {"harness_session":"claude-code:fa1ebf0a-db9b-4904-8ab3-9cdbaae58690","harness_session_source":"CLAUDE_CODE_SESSION_ID"}
