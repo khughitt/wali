@@ -8,7 +8,7 @@ complexity: high
 process: planned
 owner: phone-sync
 created: 2026-09-19T11:25:22Z
-updated: 2026-09-19T12:42:33Z
+updated: 2026-09-19T12:48:16Z
 started: 2026-09-19T12:13:30Z
 depends: [wali-0b4022]
 parent: wali-51adcc
@@ -40,3 +40,6 @@ Settle transport (Dropbox folder mirror vs. rsync to Termux over the tailnet), c
 - 2026-09-19T12:42:33Z (phone-sync): plan drafted at docs/plans/2026-09-19-phone-sync.md (untracked by policy), six step children wali-59e9ad→756c72→3f1e03→7f84a5→2f951f→4e5921 chained by dep; dots-edcbef holds the dotfiles wiring and gates the goal and Task 6
 - 2026-09-19T12:42:33Z (phone-sync): parked (waiting on user, review): review the implementation plan; on approval, execute Tasks 1-5 in .worktrees/phone-sync (subagent-driven), then Task 6 on titan
   provenance: {"harness_session":"claude-code:fa1ebf0a-db9b-4904-8ab3-9cdbaae58690","harness_session_source":"CLAUDE_CODE_SESSION_ID"}
+- 2026-09-19T12:48:16Z (phone-sync): resumed
+  provenance: {"harness_session":"claude-code:fa1ebf0a-db9b-4904-8ab3-9cdbaae58690","harness_session_source":"CLAUDE_CODE_SESSION_ID"}
+- 2026-09-19T12:48:16Z (phone-sync): plan review round 1: 5 findings taken — Task 6 no longer touches ~/bin/walictl (it and dotfiles bin/walictl are the quick-edit review shim today) and enables the timer only after the serving checkout has phone; dotfiles excluded from both scans; temporaries are <id>.jpg.tmp written as jpg:<path> so no id can collide; dry-run validates dir type; manifest load also survives invalid UTF-8. Spec updated to match
