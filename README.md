@@ -56,7 +56,3 @@ Ruff findings pending: run `uv run ruff check`.
 - `DTZ007` at `tests/test_walictl.py:306`
 - `SIM117` at `tests/test_walictl.py:724`
 - `RUF015` at `tests/test_walictl.py:744`
-- `PLW1510` (x3) and `F811` (x7) at `tests/test_cli_surface.py`: this file's content is
-  specified verbatim by the CLI vocabulary plan's task brief (re-importing the `env`
-  fixture from `test_walictl.py` reads as a redefinition; the completion-script
-  assertions omit `check=`); left as given rather than diverging from the brief.
