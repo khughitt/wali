@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from collections.abc import Sequence
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, date, datetime
@@ -592,8 +593,8 @@ def test_invalid_sampling_values_report_config_error(walictl: ModuleType, env: d
     path.write_text(path.read_text() + f"[sampling]\n{key} = {value}\n")
     code, stdout, stderr = run_cli(walictl, ["current", "--json"])
     assert (code, stdout) == (1, "")
-    assert stderr.startswith(f"config key sampling.{key} ")
     assert len(stderr.splitlines()) == 1
+    assert json.loads(stderr)["error"]["detail"].startswith(f"config key sampling.{key} ")
 
 
 def test_load_config_fails_when_file_is_missing(walictl: ModuleType, tmp_path: Path) -> None:
@@ -617,14 +618,16 @@ def test_every_command_fails_without_config(walictl: ModuleType, tmp_path: Path,
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
     code, stdout, stderr = run_cli(walictl, ["current", "--json"])
     assert (code, stdout) == (1, "")
-    assert stderr.startswith("config not found:")
+    assert json.loads(stderr)["error"]["detail"].startswith("config not found:")
 
 
 def test_main_flattens_expected_runtime_error(walictl: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     def fail(path: Path) -> Any:
         raise OSError("bad\nconfig")
     monkeypatch.setattr(walictl, "load_config", fail)
-    assert run_cli(walictl, ["current", "--json"]) == (1, "", "bad config\n")
+    code, stdout, stderr = run_cli(walictl, ["current", "--json"])
+    assert (code, stdout) == (1, "")
+    assert json.loads(stderr) == {"error": {"kind": "walictl", "detail": "bad config"}}
 
 
 def test_photo_id_and_capture_date(walictl: ModuleType) -> None:
@@ -1134,7 +1137,8 @@ def test_current_reports_the_keyed_variant_without_rendering(
 def test_variant_commands_require_edits_file(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia) -> None:
     for argv in (["variant", "show", "--json"], ["variant", "preview"], ["variant", "apply", "--set", "rotate=90"], ["variant", "reset"]):
         code, _, stderr = run_cli(walictl, argv)
-        assert (code, stderr) == (1, "config key edits_file is required\n"), argv
+        detail = json.loads(stderr)["error"]["detail"] if "--json" in argv else stderr.rstrip("\n")
+        assert (code, detail) == (1, "config key edits_file is required"), argv
 
 
 def test_variant_show_reports_effective_recipe(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia, fake_magick: Path) -> None:
@@ -1668,21 +1672,27 @@ def test_current_reports_history_position(walictl: ModuleType, env: dict[str, Pa
     assert payload["history"] == {"cursor": 0, "length": 2}
 
 
-def test_current_requires_json_flag(walictl: ModuleType, env: dict[str, Path]) -> None:
+def test_current_without_json_prints_pretty_text(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia) -> None:
     code, stdout, stderr = run_cli(walictl, ["current"])
-    assert (code, stdout) == (2, "")
-    assert "--json" in stderr
+    assert code == 0 and stderr == ""
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(stdout)
 
 
 def test_script_runs_as_a_subprocess() -> None:
-    result = subprocess.run([sys.executable, str(SCRIPT), "current"], capture_output=True, text=True, check=False)
-    assert result.returncode == 2 and "--json" in result.stderr
+    result = subprocess.run([sys.executable, str(SCRIPT), "--help"], capture_output=True, text=True, check=False)
+    assert result.returncode == 0 and result.stdout.startswith("usage:")
+
+
+def test_version_matches_pyproject(walictl: ModuleType) -> None:
+    assert walictl.VERSION == tomllib.loads((SCRIPT.parents[1] / "pyproject.toml").read_text())["project"]["version"]
 
 
 def test_current_reports_ipc_failure(walictl: ModuleType, env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(subprocess, "run", FakeNoctalia(None).run)
     code, stdout, stderr = run_cli(walictl, ["current", "--json"])
-    assert (code, stdout, stderr) == (1, "", "could not determine current wallpaper\n")
+    assert (code, stdout) == (1, "")
+    assert json.loads(stderr) == {"error": {"kind": "walictl", "detail": "could not determine current wallpaper"}}
 
 
 def load_history(walictl: ModuleType) -> Any:
@@ -2022,7 +2032,7 @@ def test_neighbors_json_orders_by_capture_date(walictl: ModuleType, env: dict[st
     (env["wallpapers"] / "PXL_20210531_235959000.jpg").touch()
     (env["wallpapers"] / "IMG_undated.jpg").touch()
     noctalia.default = env["wallpapers"] / "PXL_20210609_120000000.jpg"
-    code, stdout, _ = run_cli(walictl, ["neighbors", "--json", "--count", "1"])
+    code, stdout, _ = run_cli(walictl, ["neighbors", "--json", "--limit", "1"])
     assert code == 0
     payload = json.loads(stdout)
     assert payload["id"] == "PXL_20210609_120000000"
@@ -2031,9 +2041,10 @@ def test_neighbors_json_orders_by_capture_date(walictl: ModuleType, env: dict[st
     assert payload["after"][0] == {"id": "PXL_20220402_162957459", "date": "2022-04-02", "path": str(env["wallpapers"] / "PXL_20220402_162957459.jpg")}
     payload = json.loads(run_cli(walictl, ["neighbors", "--json"])[1])
     assert [n["id"] for n in payload["before"]] == ["PXL_20210531_235959000", "PXL_20210608_111152739"]
-    payload = json.loads(run_cli(walictl, ["neighbors", "--json", "--count", "0"])[1])
+    payload = json.loads(run_cli(walictl, ["neighbors", "--json", "--limit", "0"])[1])
     assert payload["before"] == [] and payload["after"] == []
-    assert run_cli(walictl, ["neighbors", "--json", "--count", "-1"])[2] == "count must be non-negative\n"
+    code, _, stderr = run_cli(walictl, ["neighbors", "--json", "--limit", "-1"])
+    assert (code, json.loads(stderr)["error"]["detail"]) == (1, "limit must be non-negative")
 
 
 def test_neighbors_fails_for_undated_current(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia) -> None:
@@ -2041,7 +2052,7 @@ def test_neighbors_fails_for_undated_current(walictl: ModuleType, env: dict[str,
     undated.touch()
     noctalia.default = undated
     code, _, stderr = run_cli(walictl, ["neighbors", "--json"])
-    assert (code, stderr) == (1, "current wallpaper has no capture date: IMG_1\n")
+    assert (code, json.loads(stderr)["error"]["detail"]) == (1, "current wallpaper has no capture date: IMG_1")
 
 
 def test_capture_navigation_steps_over_hidden(walictl: ModuleType, env: dict[str, Path], noctalia: FakeNoctalia) -> None:

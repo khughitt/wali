@@ -50,7 +50,7 @@ walictl favorites --json
 walictl hide [<id>]         # hide from sampling; when it is displayed, sample a replacement
 walictl unhide <id>         # restore a hidden photo
 walictl hidden --json       # hidden photos, same item shape as favorites
-walictl neighbors --json    # capture-time neighbours, for mind6; --count must be non-negative
+walictl neighbors --json    # capture-time neighbours, for mind6; --limit must be non-negative
 walictl edit                # GIMP on the original, else on the display file
 walictl observe             # hook entry point
 walictl import-favorites <favorites.txt>
