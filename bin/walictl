@@ -1080,8 +1080,13 @@ def replay_path(config: Config, library: dict[str, Path], entry: HistoryEntry) -
     return Path(entry.path)
 
 
-def navigate(ctx: Context, action: str, rng: random.Random) -> str:
-    """Reconcile, navigate, and commit while holding the history lock."""
+def navigate(ctx: Context, action: str, rng: random.Random) -> tuple[str, str]:
+    """Reconcile, navigate, and commit while holding the history lock.
+
+    Returns `(word, photo_id)` for the caller to report: `word` is `action`, except for
+    "observe" where it is "recorded" or "unchanged". Writes nothing itself, so a caller
+    (`cmd_hide`) can fold the result into its own report under either output mode.
+    """
     with locked(history_lock()):
         path = history_path()
         history = History.load(path)
@@ -1091,8 +1096,7 @@ def navigate(ctx: Context, action: str, rng: random.Random) -> str:
         current = history.current()
         assert current is not None
         if action == "observe":
-            ctx.out.write(f"{'recorded' if changed else 'unchanged'} {current.id}\n")
-            return current.id
+            return ("recorded" if changed else "unchanged"), current.id
 
         library = scan_library(ctx.config.wallpaper_dir)
         delta = (
@@ -1138,8 +1142,7 @@ def navigate(ctx: Context, action: str, rng: random.Random) -> str:
         history.save(path)
         selected = history.current()
         assert selected is not None
-        ctx.out.write(f"{action}: {selected.id}\n")
-        return selected.id
+        return action, selected.id
 
 
 def _rng(args: argparse.Namespace) -> random.Random:
@@ -1147,28 +1150,37 @@ def _rng(args: argparse.Namespace) -> random.Random:
     return random.Random(seed) if seed is not None else random.Random()
 
 
+def _emit_navigation(ctx: Context, word: str, photo: str, *, sep: str = ": ") -> None:
+    emit(ctx, {word: photo}, f"{word}{sep}{photo}\n")
+
+
 def cmd_next(ctx: Context, args: argparse.Namespace) -> int:
-    navigate(ctx, "next", _rng(args))
+    word, photo = navigate(ctx, "next", _rng(args))
+    _emit_navigation(ctx, word, photo)
     return 0
 
 
 def cmd_previous(ctx: Context, args: argparse.Namespace) -> int:
-    navigate(ctx, "previous", _rng(args))
+    word, photo = navigate(ctx, "previous", _rng(args))
+    _emit_navigation(ctx, word, photo)
     return 0
 
 
 def cmd_random(ctx: Context, args: argparse.Namespace) -> int:
-    navigate(ctx, "random", _rng(args))
+    word, photo = navigate(ctx, "random", _rng(args))
+    _emit_navigation(ctx, word, photo)
     return 0
 
 
 def cmd_neighbor(ctx: Context, args: argparse.Namespace) -> int:
-    navigate(ctx, args.command, _rng(args))
+    word, photo = navigate(ctx, args.command, _rng(args))
+    _emit_navigation(ctx, word, photo)
     return 0
 
 
 def cmd_observe(ctx: Context, args: argparse.Namespace) -> int:
-    navigate(ctx, "observe", _rng(args))
+    word, photo = navigate(ctx, "observe", _rng(args))
+    _emit_navigation(ctx, word, photo, sep=" ")
     return 0
 
 
@@ -1190,7 +1202,7 @@ def cmd_favorite(ctx: Context, args: argparse.Namespace) -> int:
             store.add_favorite(photo, utc_now())
             state = "favorited"
         store.save(ctx.config.favorites_file)
-    ctx.out.write(f"{state} {photo}\n")
+    emit(ctx, {state: photo}, f"{state} {photo}\n")
     return 0
 
 
@@ -1251,10 +1263,23 @@ def cmd_hide(ctx: Context, args: argparse.Namespace) -> int:
                 raise WalictlError(f"unknown photo id: {photo}")
             store.add_hidden(photo, utc_now())
             store.save(ctx.config.favorites_file)
-    ctx.out.write(f"hidden {photo}\n")
-    # The hide is saved; a failed replacement below exits 1 without undoing it.
+    # The hide is saved; a failed replacement below exits 1 without undoing it. Under
+    # --json nothing is written until the whole command (hide + any replacement)
+    # succeeds, so a mid-way failure still leaves stdout empty; under pretty, "hidden
+    # <id>" is written immediately, matching a failure that only ever affects the
+    # display-replacement step that follows it.
+    pretty_now = ctx.mode != "json"
+    if pretty_now:
+        ctx.out.write(f"hidden {photo}\n")
+    payload: dict[str, object] = {"hidden": photo}
     if photo == displayed:
-        navigate(ctx, "random", _rng(args))
+        word, new_id = navigate(ctx, "random", _rng(args))
+        payload[word] = new_id
+        if pretty_now:
+            ctx.out.write(f"{word}: {new_id}\n")
+    if not pretty_now:
+        json.dump(payload, ctx.out)
+        ctx.out.write("\n")
     return 0
 
 
@@ -1264,7 +1289,7 @@ def cmd_unhide(ctx: Context, args: argparse.Namespace) -> int:
         if not store.remove_hidden(args.photo_id):
             raise WalictlError(f"not hidden: {args.photo_id}")
         store.save(ctx.config.favorites_file)
-    ctx.out.write(f"unhidden {args.photo_id}\n")
+    emit(ctx, {"unhidden": args.photo_id}, f"unhidden {args.photo_id}\n")
     return 0
 
 
@@ -1298,15 +1323,24 @@ def cmd_import_favorites(ctx: Context, args: argparse.Namespace) -> int:
         for photo in unique_ids:
             store.add_favorite(photo, now)
         store.save(ctx.config.favorites_file)
-    ctx.out.write(f"lines: {len(lines)}\nunique: {len(unique_ids)}\n")
-    ctx.out.write(f"duplicate occurrences: {len(ids) - len(unique_ids)}\n")
-    ctx.out.write(f"dangling paths: {len(dangling)}\n")
-    for line in dangling:
-        ctx.out.write(f"  {line}\n")
-    ctx.out.write(f"missing display files: {len(missing)}\n")
-    for photo in missing:
-        ctx.out.write(f"  {photo}\n")
-    ctx.out.write(f"wrote {ctx.config.favorites_file}\n")
+    pretty = (
+        f"lines: {len(lines)}\nunique: {len(unique_ids)}\n"
+        f"duplicate occurrences: {len(ids) - len(unique_ids)}\n"
+        f"dangling paths: {len(dangling)}\n"
+        + "".join(f"  {line}\n" for line in dangling)
+        + f"missing display files: {len(missing)}\n"
+        + "".join(f"  {photo}\n" for photo in missing)
+        + f"wrote {ctx.config.favorites_file}\n"
+    )
+    payload = {
+        "lines": len(lines),
+        "unique": len(unique_ids),
+        "duplicates": len(ids) - len(unique_ids),
+        "dangling": dangling,
+        "missing": missing,
+        "favorites_file": str(ctx.config.favorites_file),
+    }
+    emit(ctx, payload, pretty)
     return 0
 
 
@@ -1366,7 +1400,7 @@ def cmd_edit(ctx: Context, args: argparse.Namespace) -> int:
         subprocess.Popen(["gimp", str(target)], start_new_session=True)
     except FileNotFoundError as exc:
         raise WalictlError("gimp command not found") from exc
-    ctx.out.write(f"opened {target}\n")
+    emit(ctx, {"opened": str(target)}, f"opened {target}\n")
     return 0
 
 
@@ -1490,7 +1524,7 @@ def cmd_variant_preview(ctx: Context, args: argparse.Namespace) -> int:
             tmp = render_to_temp(source, recipe, edits.output, dest.parent, PREVIEW_WIDTH)
             os.replace(tmp, dest)
         prune_previews(photo, keep=dest)
-    ctx.out.write(f"{dest}\n")
+    emit(ctx, {"preview_path": str(dest)}, f"{dest}\n")
     return 0
 
 
@@ -1507,7 +1541,7 @@ def _reset_variant(ctx: Context, edits: EditsConfig, photo: str, displayed: Path
         update_history_path(displayed, photo, original, utc_now())
     with locked(variants_lock()):
         prune_variants(photo, keep=None)
-    ctx.out.write(f"reset {photo}\n")
+    emit(ctx, {"reset": photo}, f"reset {photo}\n")
 
 
 def cmd_variant_apply(ctx: Context, args: argparse.Namespace) -> int:
@@ -1545,7 +1579,7 @@ def cmd_variant_apply(ctx: Context, args: argparse.Namespace) -> int:
             update_history_path(displayed, photo, target, utc_now())
         with locked(variants_lock()):
             prune_variants(photo, keep=target)
-    ctx.out.write(f"applied {photo}\n")
+    emit(ctx, {"applied": photo}, f"applied {photo}\n")
     return 0
 
 
