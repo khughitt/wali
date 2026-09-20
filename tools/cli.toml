@@ -1572,6 +1572,11 @@ options = [
   { names = ["--family"], value = "string", required = true },
   { names = ["--riff"], value = "string", required = true },
   { names = ["--namespace"], value = "string", required = true },
+  { names = ["--model"], value = "string", default = "gpt-image" },
+  { names = ["--floor-rows"], value = "int", default = "12" },
+  { names = ["--body-plan"], value = "string", default = "cat" },
+  { names = ["--reason"], value = "string" },
+  { names = ["--theme-graph"], value = "path" },
 ]
 
 # ---- relay
