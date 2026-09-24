@@ -13,7 +13,7 @@ and the config format are in `docs/noctalia-wallpaper-switcher.md`.
 | Path | Purpose |
 |---|---|
 | `bin/walictl` | The CLI (Python 3.11+, standard library only) |
-| `shell/wali.zsh` | zsh helpers: `wali_ingest`, `wali_set`, `wali_search`, `wali_rotate`, … |
+| `shell/wali.zsh` | zsh helpers: `wali_ingest`, `wali_set`, `wali_search`, … |
 | `integrations/noctalia-plugin/` | The `khughitt/wali-panel` Noctalia v5 plugin |
 | `systemd/` | `wali-rotate.timer`, `wali-phone-sync.timer`, and their services |
 | `tests/` | pytest suite for walictl, zsh suite for the helpers and the plugin manifest |

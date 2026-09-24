@@ -122,17 +122,21 @@ function wali_reload {
 
 # process a single image into 3440px-wide wallpaper
 # usage: _wali_process_image <source> <outfile> <mode> [angle]
-# modes: landscape (resize only), rotate (rotate + resize), crop (center-crop 21:9 + resize),
-#        rotate-crop (rotate + center-crop 21:9 + resize)
+# modes: upright (orient + resize), rotate (orient + rotate + resize)
 # angle: rotation degrees (default: 90). use -90 for left, 90 for right
+#
+# The EXIF orientation is applied first and the output is written upright
+# (orientation 1): Noctalia ignores the flag, so an unapplied one shows the
+# photo sideways or upside down. Crops are per-host recipes in walictl, never
+# baked into the shared library.
 function _wali_process_image {
   local src="$1" outfile="$2" mode="$3" angle="${4:-90}"
   local -a cmd
 
   case "$mode" in
-    landscape|crop)
+    upright)
       ;;
-    rotate|rotate-crop)
+    rotate)
       case "$angle" in
         -180|-90|90|180) ;;
         *) print -u2 -- "Unsupported rotation angle: $angle"; return 1 ;;
@@ -144,32 +148,10 @@ function _wali_process_image {
       ;;
   esac
 
-  local dims=$(identify "$src" | cut -d ' ' -f 3)
-  local w=$(echo "$dims" | cut -d 'x' -f 1)
-  local h=$(echo "$dims" | cut -d 'x' -f 2)
-
-  cmd=(magick "$src")
-
-  case "$mode" in
-    rotate)
-      cmd+=(-rotate "$angle")
-      ;;
-    crop)
-      local crop_h=$((w * 9 / 21))
-      cmd+=(-gravity center -crop "${w}x${crop_h}+0+0" +repage)
-      ;;
-    rotate-crop)
-      cmd+=(-rotate "$angle")
-      # 90°/270° swaps dimensions; 180° preserves them
-      local rw=$w rh=$h
-      if [ "$angle" != 180 ] && [ "$angle" != -180 ]; then
-        rw=$h
-        rh=$w
-      fi
-      local crop_h=$((rw * 9 / 21))
-      cmd+=(-gravity center -crop "${rw}x${crop_h}+0+0" +repage)
-      ;;
-  esac
+  cmd=(magick "$src" -auto-orient)
+  if [ "$mode" = rotate ]; then
+    cmd+=(-rotate "$angle")
+  fi
 
   cmd+=(-resize 3440x)
   if [ "$WALI_FORMAT" = "jpg" ]; then
@@ -188,37 +170,55 @@ function _wali_process_image {
   fi
 }
 
+# the size a photo displays at: "<width> <height>" after its EXIF orientation
+function _wali_oriented_size {
+  local w h orientation
+  read -r w h orientation < <(identify -ping -format '%w %h %[orientation]\n' "$1")
+  case "$orientation" in
+    LeftTop|RightTop|RightBottom|LeftBottom) print -- "$h $w" ;;
+    *) print -- "$w $h" ;;
+  esac
+}
+
+# ask how to ingest a portrait; prints the mode, or nothing to skip. The
+# preview and the prompt go to stderr: stdout is the answer.
+function _wali_portrait_mode {
+  local src="$1" w="$2" h="$3" choice
+  kitten icat --clear --transfer-mode=memory --stdin=no "$src" >&2
+  print -u2 -- "\n$(basename "$src") (${w}x${h})"
+  print -u2 -n -- "[r]otate / [u]pright / [s]kip? "
+  read -r choice
+  case "$choice" in
+    r) print -- rotate ;;
+    u) print -- upright ;;
+  esac
+}
+
 # image ingestion
 function wali_ingest {
+  local x fname outfile w h mode
   for x in $BACKGROUND_IMG_DIR/*/*/*.jpg; do
-    local fname=${x##*/}
-    local outfile="$WALI_DIR/3440/${fname%.jpg}.$WALI_FORMAT"
+    fname=${x##*/}
+    outfile="$WALI_DIR/3440/${fname%.jpg}.$WALI_FORMAT"
+    [ -e "$outfile" ] && continue
 
-    if [ ! -e "$outfile" ]; then
-      local dims=$(identify "$x" | cut -d ' ' -f 3)
-      local w=$(echo "$dims" | cut -d 'x' -f 1)
-      local h=$(echo "$dims" | cut -d 'x' -f 2)
-
-      if [ "$h" -gt "$w" ]; then
-        kitten icat --clear --transfer-mode=memory --stdin=no "$x"
-        echo "\n$(basename "$x") (${w}x${h})"
-        echo -n "[r]otate / [c]rop / [s]kip? "
-        read -r choice
-        case "$choice" in
-          r) _wali_process_image "$x" "$outfile" rotate ;;
-          c) _wali_process_image "$x" "$outfile" crop ;;
-          *) echo "Skipping $fname"; continue ;;
-        esac
-      else
-        _wali_process_image "$x" "$outfile" landscape
-      fi
+    read -r w h < <(_wali_oriented_size "$x")
+    mode=upright
+    if [ "$h" -gt "$w" ]; then
+      mode=$(_wali_portrait_mode "$x" "$w" "$h")
     fi
+    if [ -z "$mode" ]; then
+      echo "Skipping $fname"
+      continue
+    fi
+    _wali_process_image "$x" "$outfile" "$mode"
   done
 }
 
 # reprocess portrait images that already have processed versions
 function wali_reprocess {
   local src_path="${1:?Usage: wali_reprocess <source_path>}"
+  local x fname outfile w h mode
 
   if [ ! -d "$src_path" ]; then
     echo "Directory not found: $src_path"
@@ -228,71 +228,24 @@ function wali_reprocess {
   for x in "$src_path"/**/*.jpg; do
     [ -f "$x" ] || continue
 
-    local fname=${x##*/}
-    local outfile="$WALI_DIR/3440/${fname%.jpg}.$WALI_FORMAT"
+    fname=${x##*/}
+    outfile="$WALI_DIR/3440/${fname%.jpg}.$WALI_FORMAT"
 
     # only reprocess files that already have a processed version
     [ -e "$outfile" ] || continue
 
-    local dims=$(identify "$x" | cut -d ' ' -f 3)
-    local w=$(echo "$dims" | cut -d 'x' -f 1)
-    local h=$(echo "$dims" | cut -d 'x' -f 2)
-
     # only prompt for portrait images
+    read -r w h < <(_wali_oriented_size "$x")
     [ "$h" -gt "$w" ] || continue
 
-    kitten icat --clear --transfer-mode=memory --stdin=no "$x"
-    echo "\n$(basename "$x") (${w}x${h})"
-    echo -n "[r]otate / [c]rop / [s]kip? "
-    read -r choice
-    case "$choice" in
-      r) rm "$outfile"; _wali_process_image "$x" "$outfile" rotate ;;
-      c) rm "$outfile"; _wali_process_image "$x" "$outfile" crop ;;
-      *) echo "Skipping $fname" ;;
-    esac
+    mode=$(_wali_portrait_mode "$x" "$w" "$h")
+    if [ -z "$mode" ]; then
+      echo "Skipping $fname"
+      continue
+    fi
+    rm "$outfile"
+    _wali_process_image "$x" "$outfile" "$mode"
   done
-}
-
-# rotate current wallpaper and crop to 21:9
-# usage: wali_rotate [l|r|f]  (default: r)
-#   l = 90° left (CCW), r = 90° right (CW), f = 180° flip
-function wali_rotate {
-  local dir="${1:-r}"
-  local angle
-  case "$dir" in
-    l) angle=-90 ;;
-    r) angle=90 ;;
-    f) angle=180 ;;
-    *) echo "Usage: wali_rotate [l|r|f]"; return 1 ;;
-  esac
-
-  # one payload: two separate calls could straddle a rotation and pair one
-  # photo's destination with another photo's original
-  local payload current source
-  payload=$(walictl current --json) || return 1
-  current=$(jq -r '.path' <<< "$payload")
-  source=$(jq -r '.source_path // empty' <<< "$payload")
-
-  if [ -z "$source" ]; then
-    echo "No source image for the current wallpaper; nothing to rotate" >&2
-    return 1
-  fi
-  if [ ! -f "$source" ]; then
-    echo "Source image not found: $source" >&2
-    return 1
-  fi
-
-  echo "Source: $source"
-  echo "Rotating ${angle}° + cropping to 21:9..."
-
-  rm -f "$current"
-  _wali_process_image "$source" "$current" rotate-crop "$angle"
-
-  # clear swww first — it skips reload when the file path hasn't changed
-  if [ "$WALI_BACKEND" = "swww" ]; then
-    swww clear
-  fi
-  wali_set "$current"
 }
 
 # vi:filetype=zsh

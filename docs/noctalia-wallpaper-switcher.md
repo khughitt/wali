@@ -36,6 +36,12 @@ verify the exported effective config has wallpaper automation disabled.
 | `bin/walictl` | The CLI |
 | `tests/test_walictl.py` | Tests |
 
+The library (`wallpaper_dir`) is shared by every host, so its files are
+host-neutral: `wali_ingest` applies the EXIF orientation (Noctalia ignores the
+flag) and writes each photo full-frame and 3440 wide. A portrait is kept
+upright or turned sideways at ingest; crops and later rotations are recipes,
+rendered per host.
+
 ## Commands
 
 ```
