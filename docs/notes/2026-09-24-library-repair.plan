@@ -2,7 +2,7 @@
 # Run on titan: tools/library-repair apply <this file> --backup <dir>.
 
 # Flag o3 (stored upside down; Noctalia ignores the flag): 95
-322511	upright
+PXL_20210710_144322511	upright
 PXL_20210604_160717325	upright
 PXL_20210605_115257421	upright
 PXL_20210622_022541911	upright
@@ -437,7 +437,6 @@ PXL_20230531_233311506	keep
 PXL_20230531_234001587	keep
 PXL_20230531_234013117	keep
 
-# Never resized to 3440 wide (3)
+# Never resized to 3440 wide (2; PXL_20231208_121805621 has no original: see the runbook)
 PXL_20220402_162957459	keep
-PXL_20231208_121805621	keep
 PXL_20231229_123403981	keep

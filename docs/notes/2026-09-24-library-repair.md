@@ -33,7 +33,7 @@ and writes orientation 1, and the crop modes and `wali_rotate` are gone.
 
 ## Plan
 
-431 entries, every one re-rendered from its archive original, full-frame,
+430 entries, every one re-rendered from its archive original, full-frame,
 3440 wide, orientation 1:
 
 - 95 orientation-3 files: `upright`.
@@ -43,7 +43,9 @@ and writes orientation 1, and the crop modes and `wali_rotate` are gone.
   up-direction. When unsure: upright.
 - 19 cropped files: `keep` (the rotation `wali_rotate` chose, without the
   crop).
-- 3 unresized files: `keep`.
+- 2 unresized files: `keep`. The third, `PXL_20231208_121805621`, has no
+  archive original (the dry run found it); its library file is 8160×4590 with
+  orientation 1, so the runbook resizes it in place.
 
 `keep` finds the rotation of the original's stored pixels that matches the
 file as it displays today. On 14 library photos × 4 rotations with 21:9 crops
@@ -56,8 +58,13 @@ it chose right in 56 of 56 cases, best score ≤ 0.009 against a runner-up
 plan=~/d/wali/docs/notes/2026-09-24-library-repair.plan
 backup=/mnt/storage/backgrounds-library-backup-2026-09-24
 
-~/d/wali/tools/library-repair apply "$plan" --backup "$backup" --dry-run   # expect: would repair 431
+~/d/wali/tools/library-repair apply "$plan" --backup "$backup" --dry-run   # expect: would repair 430
 ~/d/wali/tools/library-repair apply "$plan" --backup "$backup"
+
+# No original: the library file is full size and upright already; resize it.
+f=~/d/linux/backgrounds/3440/PXL_20231208_121805621.jpg
+cp -pn "$f" "$backup/" && magick "$f" -resize 3440x -quality 90 "jpg:$f.tmp" \
+  && jpegoptim --strip-none "$f.tmp" && mv "$f.tmp" "$f"
 
 # The 7 rotate recipes turned these photos upright; the files are upright now.
 for id in PXL_20210608_145815616 PXL_20210626_151504364 PXL_20210712_141515287 PXL_20210726_164659824; do
