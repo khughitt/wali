@@ -19,10 +19,12 @@ dev = [
 include = [
   "bin/walictl",
   "tests/test_walictl.py",
+  "tools/library-repair",
+  "tests/test_library_repair.py",
 ]
 
 [tool.ruff]
 line-length = 120
 respect-gitignore = false
 include = ["pyproject.toml", "tests/**/*.py"]
-extend-include = ["bin/walictl"]
+extend-include = ["bin/walictl", "tools/library-repair"]

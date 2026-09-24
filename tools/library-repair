@@ -1,0 +1,304 @@
+#!/usr/bin/env python3
+"""library-repair: re-render listed library files from their archive originals.
+
+A one-off repair of the shared library (docs/notes/2026-09-24-library-repair.md):
+files ingested before ingest applied the EXIF orientation, and files that
+wali_rotate cropped to 21:9. Runs on the host with the archive (titan).
+
+    library-repair apply PLAN --backup DIR [--dry-run]
+    library-repair audit
+
+A plan line is `<photo id> <action>`; `#` starts a comment. Actions:
+
+    upright     apply the original's EXIF orientation
+    keep        keep the photo as it displays today, uncropped: the rotation of
+                the original's stored pixels that matches the library file
+    rotate=N    rotate the original's stored pixels by N (0/90/180/270)
+
+Every output is full-frame, LIBRARY_WIDTH wide, written with orientation 1
+(what Noctalia shows is then what every EXIF-aware reader shows). The library
+file keeps its path and format; its previous content is copied into the backup
+directory first, and an existing backup is never overwritten, so a rerun keeps
+the first one. Every entry is resolved before anything is written.
+"""
+from __future__ import annotations
+
+import argparse
+import importlib.machinery
+import importlib.util
+import math
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+LIBRARY_WIDTH = 3440  # the width wali_ingest writes
+QUALITY = "90"  # wali_ingest's JPEG quality
+ROTATIONS = (0, 90, 180, 270)
+MATCH_SIDE = 32  # candidates are compared as MATCH_SIDE² grey thumbnails
+MATCH_MAX = 0.08  # the best candidate's RMS difference (0..1) must be at most this
+MATCH_MARGIN = 2.0  # and the runner-up must differ at least this many times more
+MATCH_GAP = 0.02  # and by at least this much: a flat image scores 0 at every rotation
+UPRIGHT = ("TopLeft", "Undefined", "")
+AUDIT_BATCH = 200
+
+
+class RepairError(RuntimeError):
+    pass
+
+
+def load_walictl() -> ModuleType:
+    script = Path(__file__).resolve().parents[1] / "bin" / "walictl"
+    loader = importlib.machinery.SourceFileLoader("walictl", str(script))
+    spec = importlib.util.spec_from_loader("walictl", loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["walictl"] = module
+    loader.exec_module(module)
+    return module
+
+
+walictl = load_walictl()
+
+
+# --- plan -------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Entry:
+    photo_id: str
+    action: str  # "upright", "keep", or "rotate"
+    rotation: int | None = None  # set for "rotate"
+
+
+def parse_action(photo_id: str, word: str) -> Entry:
+    if word in ("upright", "keep"):
+        return Entry(photo_id, word)
+    if word.startswith("rotate="):
+        try:
+            rotation = int(word.removeprefix("rotate="))
+        except ValueError:
+            rotation = -1
+        if rotation in ROTATIONS:
+            return Entry(photo_id, "rotate", rotation)
+    raise RepairError(f"{photo_id}: unknown action {word!r} (upright, keep, rotate=0/90/180/270)")
+
+
+def parse_plan(text: str) -> list[Entry]:
+    entries: list[Entry] = []
+    seen: set[str] = set()
+    for number, line in enumerate(text.splitlines(), 1):
+        fields = line.split("#", 1)[0].split()
+        if not fields:
+            continue
+        if len(fields) != 2:
+            raise RepairError(f"plan line {number}: expected '<photo id> <action>'")
+        photo_id = walictl.check_photo_id(fields[0], f"plan line {number} photo id")
+        if photo_id in seen:
+            raise RepairError(f"plan line {number}: {photo_id} is listed twice")
+        seen.add(photo_id)
+        entries.append(parse_action(photo_id, fields[1]))
+    return entries
+
+
+# --- images -----------------------------------------------------------------
+
+
+def magick(*args: str) -> subprocess.CompletedProcess[bytes]:
+    try:
+        result = subprocess.run(["magick", *args], check=False, capture_output=True)
+    except FileNotFoundError as exc:
+        raise RepairError("magick command not found") from exc
+    if result.returncode != 0:
+        stderr = " ".join(result.stderr.decode(errors="replace").split())
+        raise RepairError(f"magick failed: {stderr or result.returncode}")
+    return result
+
+
+def stored_size(path: Path) -> tuple[int, int]:
+    width, height = magick("identify", "-ping", "-format", "%w %h", str(path)).stdout.split()
+    return int(width), int(height)
+
+
+def thumbnail(path: Path, ops: list[str]) -> bytes:
+    side = f"{MATCH_SIDE}x{MATCH_SIDE}!"
+    return magick(str(path), *ops, "-resize", side, "-colorspace", "gray", "-depth", "8", "gray:-").stdout
+
+
+def rms(a: bytes, b: bytes) -> float:
+    if len(a) != len(b) or not a:
+        raise RepairError("thumbnails differ in size")
+    return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b, strict=True)) / len(a)) / 255
+
+
+def match_rotation(original: Path, current: Path) -> tuple[int, float, float]:
+    """The rotation of the original's stored pixels that best matches `current`.
+
+    Each candidate is center-cropped to the current file's aspect first, which
+    is how wali_rotate cropped. Returns (rotation, best score, runner-up score).
+    """
+    target = thumbnail(current, [])
+    aspect = stored_size(current)
+    with tempfile.TemporaryDirectory(prefix="library-repair.") as tmp:
+        small = Path(tmp) / "small.png"
+        magick(str(original), "-resize", "512x512", str(small))
+        width, height = stored_size(small)
+        scores: list[tuple[float, int]] = []
+        for rotation in ROTATIONS:
+            w, h = (height, width) if rotation in (90, 270) else (width, height)
+            crop_w, crop_h, x, y = walictl.crop_box(w, h, aspect, "center")
+            ops = ["-rotate", str(rotation), "-crop", f"{crop_w}x{crop_h}+{x}+{y}", "+repage"]
+            scores.append((rms(thumbnail(small, ops), target), rotation))
+    scores.sort()
+    (best, rotation), (runner_up, _) = scores[0], scores[1]
+    return rotation, best, runner_up
+
+
+def render_ops(entry: Entry, rotation: int | None) -> list[str]:
+    if entry.action == "upright":
+        return ["-auto-orient"]
+    assert rotation is not None
+    return (["-rotate", str(rotation)] if rotation else []) + ["-orient", "top-left"]
+
+
+def render_format(path: Path) -> str:
+    suffix = path.suffix.lower().lstrip(".")
+    return "jpg" if suffix == "jpeg" else suffix
+
+
+def render(original: Path, target: Path, ops: list[str]) -> None:
+    """Render beside the target, then replace it. The temporary is not a library file."""
+    fmt = render_format(target)
+    tmp = target.with_name(f".{target.name}.repair.tmp")
+    try:
+        magick(str(original), *ops, "-resize", f"{LIBRARY_WIDTH}x", "-quality", QUALITY, f"{fmt}:{tmp}")
+        if fmt == "jpg":
+            result = subprocess.run(["jpegoptim", "--strip-none", str(tmp)], check=False, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RepairError(f"jpegoptim failed: {' '.join(result.stderr.split()) or result.returncode}")
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+# --- apply ------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Step:
+    entry: Entry
+    library_file: Path
+    original: Path
+    rotation: int | None
+    note: str
+
+
+def resolve(config: Any, entries: list[Entry]) -> list[Step]:  # config: walictl.Config
+    library = walictl.scan_library(config.wallpaper_dir)
+    steps: list[Step] = []
+    errors: list[str] = []
+    for entry in entries:
+        library_file = library.get(entry.photo_id)
+        original = walictl.resolve_source(config, entry.photo_id)
+        if library_file is None:
+            errors.append(f"{entry.photo_id}: not in the library")
+            continue
+        if original is None:
+            errors.append(f"{entry.photo_id}: no archive original")
+            continue
+        rotation, note = entry.rotation, ""
+        if entry.action == "keep":
+            rotation, best, runner_up = match_rotation(original, library_file)
+            note = f"match {best:.3f}, next {runner_up:.3f}"
+            if best > MATCH_MAX or runner_up < max(best * MATCH_MARGIN, best + MATCH_GAP):
+                errors.append(f"{entry.photo_id}: ambiguous match ({note}); give rotate=N instead")
+                continue
+        steps.append(Step(entry, library_file, original, rotation, note))
+    if errors:
+        raise RepairError("plan does not resolve:\n  " + "\n  ".join(errors))
+    return steps
+
+
+def describe(step: Step) -> str:
+    if step.entry.action == "upright":
+        return f"{step.entry.photo_id} upright"
+    if step.entry.action == "keep":
+        return f"{step.entry.photo_id} keep: rotate {step.rotation} ({step.note})"
+    return f"{step.entry.photo_id} rotate {step.rotation}"
+
+
+def cmd_apply(args: argparse.Namespace) -> int:
+    config = walictl.load_config(walictl.config_path())
+    if config.archive_root is None:
+        raise RepairError("config key archive_root is required: repairs render from the originals")
+    backup = Path(args.backup).expanduser().resolve()
+    if backup.is_relative_to(config.wallpaper_dir):
+        raise RepairError(f"backup directory is inside the library: {backup}")
+    entries = parse_plan(Path(args.plan).read_text(encoding="utf-8"))
+    for tool in ("magick", "jpegoptim"):
+        if shutil.which(tool) is None:
+            raise RepairError(f"{tool} command not found")
+    steps = resolve(config, entries)
+    for number, step in enumerate(steps, 1):
+        print(f"[{number}/{len(steps)}] {describe(step)}", flush=True)
+        if args.dry_run:
+            continue
+        backup.mkdir(parents=True, exist_ok=True)
+        kept = backup / step.library_file.name
+        if not kept.exists():
+            shutil.copy2(step.library_file, kept)
+        render(step.original, step.library_file, render_ops(step.entry, step.rotation))
+    print(f"{'would repair' if args.dry_run else 'repaired'} {len(steps)}")
+    return 0
+
+
+# --- audit ------------------------------------------------------------------
+
+
+def cmd_audit(_args: argparse.Namespace) -> int:
+    """List library files that still carry an EXIF rotation; exit 1 if any do."""
+    config = walictl.load_config(walictl.config_path())
+    files = [str(path) for path in walictl.scan_library(config.wallpaper_dir).values()]
+    flagged: list[str] = []
+    for start in range(0, len(files), AUDIT_BATCH):
+        batch = files[start:start + AUDIT_BATCH]
+        out = magick("identify", "-ping", "-format", "%i\t%[orientation]\n", *batch).stdout.decode()
+        for line in out.splitlines():
+            path, _, orientation = line.rpartition("\t")
+            if orientation not in UPRIGHT:
+                flagged.append(f"{Path(path).name}\t{orientation}")
+    for line in flagged:
+        print(line)
+    print(f"{len(flagged)} of {len(files)} library files carry an EXIF rotation")
+    return 1 if flagged else 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="library-repair", description="Re-render listed library files from their archive originals.")
+    commands = parser.add_subparsers(dest="command", required=True)
+    apply = commands.add_parser("apply", help="re-render the plan's photos from their originals")
+    apply.add_argument("plan", help="plan file: '<photo id> <action>' per line")
+    apply.add_argument("--backup", required=True, help="directory the replaced library files are copied to")
+    apply.add_argument("--dry-run", action="store_true", help="resolve and report the plan; write nothing")
+    apply.set_defaults(func=cmd_apply)
+    audit = commands.add_parser("audit", help="list library files that still carry an EXIF rotation")
+    audit.set_defaults(func=cmd_audit)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return args.func(args)
+    except (RepairError, walictl.WalictlError, OSError) as exc:
+        print(f"library-repair: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
