@@ -258,6 +258,7 @@ path = ["rename"]
 summary = "Rename a registered project's prefix and retain its retired names as aliases"
 args = [{ name = "old", value = "ref", required = true }, { name = "new", value = "ref", required = true }]
 options = [
+  { names = ["--adopt"], value = "none" },
   { names = ["--explain"], value = "none" },
 ]
 
