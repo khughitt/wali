@@ -4,8 +4,9 @@ title: Live-test the Noctalia panel from a worktree without repointing the insta
 status: idea
 priority: 2
 created: 2026-09-20T00:57:17Z
-updated: 2026-09-20T00:57:17Z
+updated: 2026-10-09T11:56:39Z
 depends: []
+parent: wali-9a738d
 tags: [noctalia]
 source: session 2026-09-19 super-n debugging
 agent: "claude-code/claude-opus-5[1m]"
@@ -31,3 +32,7 @@ Related observation, not this task: ~/.config/noctalia/plugins/wali-panel is a
 stale dangling link to an old dotfiles path (safe to rm), and
 ~/.local/share/noctalia/plugins/prism is a real directory rather than the symlink
 dotfiles setup.sh expects.
+
+## Notes
+
+- 2026-10-09T11:56:38Z (main): scope: briefed; wali-75ab89 investigates an isolated Noctalia test route before any dev launcher; prefer isolated state over a distinct id on the live host; preserve the incident and related observations; brief: docs/notes/2026-10-09-noctalia-panel-refinements-brief.md

@@ -4,8 +4,9 @@ title: "Spike: mirror walictl favorites into Noctalia native [[wallpaper.favorit
 status: idea
 priority: 2
 created: 2026-09-12T09:35:41Z
-updated: 2026-09-12T09:35:41Z
+updated: 2026-10-09T11:56:37Z
 depends: []
+parent: wali-9a738d
 tags: [noctalia, wallpaper]
 source: dots-b3e5ae
 ---
@@ -15,3 +16,4 @@ Would let favorites show as stars in the native grid. Unknown: how config-declar
 ## Notes
 
 - 2026-09-12T09:35:41Z (main): moved from dots-b3e5ae
+- 2026-10-09T11:56:37Z (main): scope: briefed; wali-864e2b investigates config/state precedence, reload/removal and variant-path identity before any native-star mirror; historical prerequisite dots-59c279 is done; brief: docs/notes/2026-10-09-noctalia-panel-refinements-brief.md
