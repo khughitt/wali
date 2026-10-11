@@ -1,1 +1,4 @@
 prefix = "wali"
+
+[git]
+commit = true

@@ -7,7 +7,7 @@ size: s
 complexity: high
 process: planned
 created: 2026-10-09T11:56:10Z
-updated: 2026-10-09T11:56:10Z
+updated: 2026-10-11T15:44:20Z
 depends: []
 parent: wali-9a738d
 tags: [noctalia]
@@ -21,4 +21,4 @@ Where to look: integrations/noctalia-plugin/logic.luau (sliders, recipeDefaults)
 
 Lean: panel-only coordinate mapping, with a UI-local opt-out if the host supports it; preserve recipe values/ranges and CLI semantics. Review two labelled candidate curves before choosing; include all seven controls and round-trip checks. Do not implement the panel change. Request permission separately if a later rendered review needs the live desktop.
 
-Done: written design reviewed by the user, followed by a reviewed implementation plan under the normal planned process; record findings in the brief. On completion, run tasks note on wali-751b2c with the settled design and artifact paths, in the same commit as this result.
+Done: written design reviewed by the user, followed by a reviewed implementation plan under the normal planned process; record findings in the brief. On completion, run tasks note on wali-751b2c with the settled design and artifact paths, before the result's branch merges.

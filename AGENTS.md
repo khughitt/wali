@@ -29,6 +29,6 @@ with Noctalia, the commands, the panel keys, and the config format.
 ## Tasks workflow
 
 - Run `tasks prime` at the start of a work session and `tasks ready` before choosing work.
-- Run `tasks start ID` before implementation, add concise notes as evidence changes, and close the task with a one-line result in the same commit as the work.
+- Run `tasks start ID` before implementation, add concise notes as evidence changes, and close the task with a one-line result on its branch before it merges.
 - Never edit `tasks/*.md` directly; use the `tasks` CLI for every task mutation.
 - Before completion, run `tasks check`. Require zero errors and report every warning.
