@@ -3,8 +3,9 @@ id: wali-24af13
 title: "Spike: mirror walictl favorites into Noctalia native [[wallpaper.favorite]] stars"
 status: idea
 priority: 2
+reviewed: true
 created: 2026-09-12T09:35:41Z
-updated: 2026-10-09T11:56:37Z
+updated: 2026-10-12T18:22:34Z
 depends: []
 parent: wali-9a738d
 tags: [noctalia, wallpaper]
