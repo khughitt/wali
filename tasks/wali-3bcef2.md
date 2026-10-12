@@ -5,8 +5,9 @@ status: idea
 priority: 2
 size: s
 complexity: mid
+reviewed: true
 created: 2026-09-12T09:35:40Z
-updated: 2026-10-09T11:56:36Z
+updated: 2026-10-12T18:22:34Z
 depends: []
 parent: wali-9a738d
 tags: [quick-add, noctalia, wallpaper]
