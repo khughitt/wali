@@ -3,8 +3,9 @@ id: wali-751b2c
 title: Nonlinear slider mapping in edit mode (fine control near defaults)
 status: idea
 priority: 2
+reviewed: true
 created: 2026-09-16T23:55:39Z
-updated: 2026-10-09T11:56:38Z
+updated: 2026-10-12T18:22:34Z
 depends: []
 parent: wali-9a738d
 tags: [noctalia]
