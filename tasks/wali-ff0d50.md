@@ -3,8 +3,9 @@ id: wali-ff0d50
 title: Live-test the Noctalia panel from a worktree without repointing the installed plugin link
 status: idea
 priority: 2
+reviewed: true
 created: 2026-09-20T00:57:17Z
-updated: 2026-10-09T11:56:39Z
+updated: 2026-10-12T18:22:34Z
 depends: []
 parent: wali-9a738d
 tags: [noctalia]
