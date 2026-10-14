@@ -6,9 +6,9 @@ priority: 2
 size: m
 complexity: mid
 process: direct
-owner: main
+owner: wali-b0882b
 created: 2026-09-12T09:35:40Z
-updated: 2026-10-14T10:31:05Z
+updated: 2026-10-14T10:31:25Z
 started: 2026-10-14T10:31:05Z
 depends: []
 tags: [wallpaper]
@@ -29,4 +29,6 @@ Historical correction: 6f09934 removed wali_rotate and the baked-crop modes; the
 - 2026-09-12T09:35:40Z (main): moved from dots-5760ef
 - 2026-10-14T10:24:45Z (main): scope: scoped; checked 4c1ce3a and 6f09934; four env-based callers remain, wali_rotate is removed; settled two-field read-only walictl config show interface and scratch-only checks; P2/m/mid/direct
 - 2026-10-14T10:31:05Z (main): started
+  provenance: {"harness_session":"codex:01a139f6-7fcf-7b41-95c2-c0279fb2e672","harness_session_source":"CODEX_THREAD_ID"}
+- 2026-10-14T10:31:25Z (wali-b0882b): resumed
   provenance: {"harness_session":"codex:01a139f6-7fcf-7b41-95c2-c0279fb2e672","harness_session_source":"CODEX_THREAD_ID"}
