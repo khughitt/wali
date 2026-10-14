@@ -1,15 +1,16 @@
 ---
 id: wali-b0882b
 title: Move wali ingestion functions off WALI_DIR/BACKGROUND_IMG_DIR env vars
-status: doing
+status: done
 priority: 2
 size: m
 complexity: mid
 process: direct
 owner: wali-b0882b
 created: 2026-09-12T09:35:40Z
-updated: 2026-10-14T10:41:57Z
+updated: 2026-10-14T10:42:06Z
 started: 2026-10-14T10:31:05Z
+completed: 2026-10-14T10:42:06Z
 depends: []
 tags: [wallpaper]
 source: dots-5760ef
@@ -40,3 +41,7 @@ Historical correction: 6f09934 removed wali_rotate and the baked-crop modes; the
 - 2026-10-14T10:41:55Z (wali-b0882b): attached: final-review-report.md (2812 bytes): Read-only whole-change review: accepted, no findings; controller ruling included
 - 2026-10-14T10:41:55Z (wali-b0882b): attached: adoption-review-report.md (1301 bytes): Supplemental read-only inventory adoption review: accepted, no findings; controller ruling included
 - 2026-10-14T10:41:55Z (wali-b0882b): Ops prerequisite checks had zero errors and four existing moved_dep warnings: ops-2d63eb depends on moved ops-501ea7 (now trans-24a4f2); ops-501ea7 depends on moved ops-b2aa76 (now trans-ec284f); ops-b2aa76 depends on moved ops-2fbdea (now trans-8e2c68); ops-ce8bf9 depends on moved ops-2d63eb (now trans-2c0ae1). These are recorded on ops-dff965; wali tasks check has no warnings.
+- 2026-10-14T10:42:06Z (wali-b0882b): done
+  provenance: {"harness_session":"codex:01a139f6-7fcf-7b41-95c2-c0279fb2e672","harness_session_source":"CODEX_THREAD_ID"}
+- 2026-10-14T10:42:06Z (wali-b0882b): Added read-only config show; ingestion, reprocess and searches now use invocation-time configured paths with safe JSON decoding; 260 Python tests, shell/plugin checks and two read-only reviews passed.
+  provenance: {"harness_session":"codex:01a139f6-7fcf-7b41-95c2-c0279fb2e672","harness_session_source":"CODEX_THREAD_ID"}
