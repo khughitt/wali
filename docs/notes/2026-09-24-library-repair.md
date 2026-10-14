@@ -52,7 +52,37 @@ file as it displays today. On 14 library photos × 4 rotations with 21:9 crops
 it chose right in 56 of 56 cases, best score ≤ 0.009 against a runner-up
 ≥ 0.14; an ambiguous match stops the run before anything is written.
 
+## Current rollout status
+
+Read-only checks on titan, 2026-10-14, at checkout `4c1ce3a`:
+
+- `tools/library-repair audit` exited 0: **0 of 7515 library files carry an
+  EXIF rotation**. The backup directory below contains all 430 plan ids.
+- Sampled files are already repaired: `PXL_20210710_144322511` is
+  3440×1935 TopLeft; `PXL_20210608_145815616` and
+  `PXL_20210605_113652102` are 3440×6116 TopLeft. The audit and samples do
+  not establish that every old baked crop was removed; verify all planned
+  files' full-frame geometry against their originals before declaring that
+  part complete.
+- All seven recipes listed below still contain `rotate: 90`; the last three
+  also contain `anchor: bottom`. Their sampled sources are now upright, so
+  the old rotations no longer correct the source orientation.
+- `PXL_20231208_121805621` remains 8160×4590 TopLeft and has no backup in
+  that directory. Its separate resize remains outstanding.
+
+`wali-657e57` now covers verification of the existing repairs, the separate
+resize and the seven recipe corrections. **Do not replay all 430 entries
+merely because the task is still open.** Revalidate files, originals, backups
+and recipes, and run a disposable pilot before any extended operation.
+Changing the live shared library or recipes requires the user to run the
+reviewed commands or explicitly approve applying them.
+
 ## Runbook (titan)
+
+The batch commands below describe the original repair. After the current-state
+checks above, use them only for entries demonstrated to still need repair.
+Do not silently remove unresolved entries or widen the plan. Preserve the
+original 430-entry plan as the record of the completed batch.
 
 ```bash
 plan=~/d/wali/docs/notes/2026-09-24-library-repair.plan
@@ -66,7 +96,9 @@ f=~/d/linux/backgrounds/3440/PXL_20231208_121805621.jpg
 cp -pn "$f" "$backup/" && magick "$f" -resize 3440x -quality 90 "jpg:$f.tmp" \
   && jpegoptim --strip-none "$f.tmp" && mv "$f.tmp" "$f"
 
-# The 7 rotate recipes turned these photos upright; the files are upright now.
+# Only use these recipe commands after checking the current sources and recipes.
+# The first four must have rotate=90 only; the last three must also have anchor=bottom.
+# If there are other adjustments, preserve them when replacing the recipe instead.
 for id in PXL_20210608_145815616 PXL_20210626_151504364 PXL_20210712_141515287 PXL_20210726_164659824; do
   walictl variant reset "$id"
 done
@@ -74,14 +106,27 @@ for id in PXL_20210605_113652102 PXL_20210621_234755670 PXL_20210710_132329781; 
   walictl variant apply "$id" --set anchor=bottom
 done
 
-~/d/wali/tools/library-repair audit   # expect: 0 of 7515 library files carry an EXIF rotation (414 before)
+~/d/wali/tools/library-repair audit   # require zero flagged files; 7515 was the original library count
 ```
 
-A dry run that reports `no archive original` or an ambiguous match: move
-that line out of the plan (or give it `rotate=N`) and run again. A rerun is
-safe: it re-renders from the originals and keeps the first backup.
+A dry run that reports `no archive original` or an ambiguous match stops the
+rollout for investigation. Resolve the source or review an explicit rotation
+before changing the plan. A rerun keeps the first backup, but still overwrites
+the current library file, so first confirm no newer edit would be lost.
+
+Check where `walictl` resolves on `PATH` before the recipe step. Back up the
+current recipe state and re-read it immediately before writes: `variant reset`
+removes the entire recipe, and `variant apply` replaces it. Never drop a newer
+adjustment while removing the obsolete rotation. Run worktree code through its
+explicit path; do not repoint the shared launcher.
 
 Restore one file: `cp -p "$backup/<file>" ~/d/linux/backgrounds/3440/`.
+
+Before closing `wali-657e57`, record the final zero-orientation audit,
+full-frame/3440px checks for the 430 planned files and the separate resize,
+the seven recipe results, and backup/restore locations. Refresh this status
+section with the observed result. Unhiding photos and refreshing the live
+desktop are separate decisions.
 
 ## After
 
