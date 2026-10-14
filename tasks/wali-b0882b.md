@@ -7,7 +7,7 @@ size: m
 complexity: mid
 process: direct
 created: 2026-09-12T09:35:40Z
-updated: 2026-10-14T10:24:45Z
+updated: 2026-10-14T10:24:46Z
 depends: []
 tags: [wallpaper]
 source: dots-5760ef
@@ -25,3 +25,4 @@ Historical correction: 6f09934 removed wali_rotate and the baked-crop modes; the
 ## Notes
 
 - 2026-09-12T09:35:40Z (main): moved from dots-5760ef
+- 2026-10-14T10:24:45Z (main): scope: scoped; checked 4c1ce3a and 6f09934; four env-based callers remain, wali_rotate is removed; settled two-field read-only walictl config show interface and scratch-only checks; P2/m/mid/direct
