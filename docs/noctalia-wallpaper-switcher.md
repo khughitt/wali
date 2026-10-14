@@ -45,6 +45,7 @@ rendered per host.
 ## Commands
 
 ```
+walictl config show --json  # resolved wallpaper_dir and archive_root (string or null)
 walictl current --json      # id, date, path, source_path, variant_path, favorite, hidden, history
 walictl next                # forward in history, else a weighted sample
 walictl previous            # back in history
@@ -66,6 +67,13 @@ walictl variant preview [<id>] --set k=v..  # 560px preview of the settings; pri
 walictl variant apply [<id>] --set k=v..    # replace the recipe, render, show it when displayed
 walictl variant reset [<id>]                # drop the recipe and its renders
 ```
+
+`walictl config show` validates the config at
+`${XDG_CONFIG_HOME:-$HOME/.config}/wali/config.toml` and reports only
+`wallpaper_dir` and `archive_root`. JSON is one object with absolute, resolved
+paths (including tilde and symlink expansion); an omitted `archive_root` is
+`null`. Pretty output labels the same fields. The command reads no wallpaper
+state, contacts no daemon, and writes nothing.
 
 `Super+N` toggles the Wali Panel. Inside it, `h/l` or Left/Right walks history
 (the label beside Next shows the position, `cursor/length`); `k/j` or Up/Down
@@ -103,6 +111,28 @@ visible photo remains or Noctalia rejects the change, the hide stands and the
 command exits 1. Update `walictl` on every host before the first favorite or
 hide write after this lands: a version 1 `walictl` refuses the version 2
 file.
+
+## Shell helpers
+
+After sourcing `shell/wali.zsh`, these helpers read `walictl config show --json`
+on each invocation. `wallpaper_dir` is the final library directory; the helpers
+never append `/3440`. `WALI_DIR` and `BACKGROUND_IMG_DIR` are no longer used.
+Config or decoding errors stop the helpers before image processing, search,
+favorite writes, or GIMP.
+
+- `wali_ingest`: ingest JPEGs from `<archive_root>/<year>/<month>/*.jpg`,
+  skipping existing library files. Requires `archive_root` to be an existing
+  directory. EXIF orientation is applied before judging portraits; choose
+  rotate, upright, or skip. Images remain full-frame, resized to 3440px wide.
+- `wali_reprocess <source-directory>`: recursively revisit JPEG portraits
+  with existing library versions, using the explicit source directory.
+- `wali_search <name>`: select a match in the configured library with fzf and
+  add its photo id to favorites.
+- `wali_edit_search <name>`: select a library match and open it in GIMP.
+
+Reprocess and both searches work without `archive_root`. Set `WALI_FORMAT`
+before sourcing to choose `jpg` (default) or `png`; processing still uses
+ImageMagick and jpegoptim or oxipng.
 
 ## Phone
 

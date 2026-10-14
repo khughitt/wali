@@ -188,6 +188,45 @@ def write_ratings(env: dict[str, Path], favorites: list[str], hidden: Sequence[s
     env["favorites"].write_text(json.dumps(payload))
 
 
+@pytest.mark.parametrize("archive", [True, False])
+def test_config_show_resolves_paths_without_daemon_or_writes(walictl, env, monkeypatch, noctalia, archive):
+    root = env["wallpapers"].parent
+    monkeypatch.setenv("HOME", str(root))
+    library = root / "library ; $(touch PWNED)"
+    library.mkdir()
+    (root / "library-link").symlink_to(library, target_is_directory=True)
+    config = env["config_home"] / "wali" / "config.toml"
+    text = 'wallpaper_dir = "~/library-link"\nfavorites_file = "~/favorites.json"\n'
+    if archive:
+        text += 'archive_root = "~/archive"\n'
+    config.write_text(text)
+    before = sorted(root.rglob("*"))
+    expected = {"wallpaper_dir": str(library), "archive_root": str(env["archive"]) if archive else None}
+    for argv in (["config", "show", "--json"], ["--json", "config", "show"]):
+        code, out, err = run_cli(walictl, argv)
+        assert code == 0 and err == ""
+        assert json.loads(out) == expected
+    code, out, err = run_cli(walictl, ["config", "show", "--pretty"])
+    assert code == 0 and err == ""
+    assert out == f"wallpaper_dir: {library}\narchive_root: {expected['archive_root']}\n"
+    assert noctalia.calls == []
+    assert config.read_text() == text and sorted(root.rglob("*")) == before
+
+
+@pytest.mark.parametrize("text,detail", [(None, "config not found"), ("[", "not valid TOML"),
+                                       ('wallpaper_dir = 3\nfavorites_file = "~/f"', "non-empty string")])
+def test_config_show_propagates_config_errors(walictl, env, noctalia, text, detail):
+    config = env["config_home"] / "wali" / "config.toml"
+    if text is None:
+        config.unlink()
+    else:
+        config.write_text(text)
+    code, out, err = run_cli(walictl, ["config", "show", "--json"])
+    assert code == 1 and out == ""
+    assert detail in json.loads(err)["error"]["detail"]
+    assert noctalia.calls == []
+
+
 def test_load_config_reads_required_and_optional_keys(walictl: ModuleType, env: dict[str, Path]) -> None:
     config = walictl.load_config(walictl.config_path())
     assert config.wallpaper_dir == env["wallpapers"]

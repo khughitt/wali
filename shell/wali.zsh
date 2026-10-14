@@ -81,16 +81,46 @@ function _wali_current_wallpaper {
   esac
 }
 
+# Set the caller's local wallpaper_dir/archive_root; NUL keeps path boundaries.
+function _wali_config {
+  local payload decoded
+  local -a dirs
+  payload=$(walictl config show --json) || return
+  decoded=$(print -r -- "$payload" | python3 -c '
+import json, sys
+try:
+    config = json.load(sys.stdin)
+    if not isinstance(config, dict) or set(config) != {"wallpaper_dir", "archive_root"}:
+        raise ValueError("expected wallpaper_dir and archive_root")
+    wallpaper, archive = config["wallpaper_dir"], config["archive_root"]
+    for key in ("wallpaper_dir", "archive_root"):
+        value = config[key]
+        if key == "archive_root" and value is None:
+            continue
+        if not isinstance(value, str) or not value.startswith("/") or "\0" in value:
+            raise ValueError("expected absolute directory paths")
+    sys.stdout.write(wallpaper + "\0" + (archive or "") + "\0")
+except (ValueError, TypeError) as exc:
+    sys.exit(f"Invalid walictl config output: {exc}")
+') || return
+  dirs=("${(@0)decoded}")
+  wallpaper_dir="${dirs[1]}"
+  archive_root="${dirs[2]}"
+}
+
 # find an image by name and add it to the favorites
 function wali_search {
-  local target
-  target=$(fd "$1" "$WALI_DIR/3440" | grep --color='none' "$1" | fzf -1 --exact --preview=$KITTY_PREVIEW_CMD)
+  local target wallpaper_dir archive_root
+  _wali_config || return
+  target=$(fd "$1" "$wallpaper_dir" | grep --color='none' "$1" | fzf -1 --exact --preview=$KITTY_PREVIEW_CMD)
   [ -n "$target" ] && walictl favorite --add "${${target:t}%.*}"
 }
 
 # find an image by name and open it in gimp
 function wali_edit_search {
-  target=$(fd "$1" "$WALI_DIR/3440" | \
+  local target wallpaper_dir archive_root
+  _wali_config || return
+  target=$(fd "$1" "$wallpaper_dir" | \
     grep --color='none' "$1" | \
     fzf -1 --exact --preview=$KITTY_PREVIEW_CMD)
 
@@ -196,10 +226,15 @@ function _wali_portrait_mode {
 
 # image ingestion
 function wali_ingest {
-  local x fname outfile w h mode
-  for x in $BACKGROUND_IMG_DIR/*/*/*.jpg; do
+  local x fname outfile w h mode wallpaper_dir archive_root
+  _wali_config || return
+  if [[ -z "$archive_root" || ! -d "$archive_root" ]]; then
+    print -u2 -- "wali_ingest requires archive_root to name an existing directory: $archive_root"
+    return 1
+  fi
+  for x in "$archive_root"/*/*/*.jpg(N); do
     fname=${x##*/}
-    outfile="$WALI_DIR/3440/${fname%.jpg}.$WALI_FORMAT"
+    outfile="$wallpaper_dir/${fname%.jpg}.$WALI_FORMAT"
     [ -e "$outfile" ] && continue
 
     read -r w h < <(_wali_oriented_size "$x")
@@ -218,7 +253,8 @@ function wali_ingest {
 # reprocess portrait images that already have processed versions
 function wali_reprocess {
   local src_path="${1:?Usage: wali_reprocess <source_path>}"
-  local x fname outfile w h mode
+  local x fname outfile w h mode wallpaper_dir archive_root
+  _wali_config || return
 
   if [ ! -d "$src_path" ]; then
     echo "Directory not found: $src_path"
@@ -229,7 +265,7 @@ function wali_reprocess {
     [ -f "$x" ] || continue
 
     fname=${x##*/}
-    outfile="$WALI_DIR/3440/${fname%.jpg}.$WALI_FORMAT"
+    outfile="$wallpaper_dir/${fname%.jpg}.$WALI_FORMAT"
 
     # only reprocess files that already have a processed version
     [ -e "$outfile" ] || continue

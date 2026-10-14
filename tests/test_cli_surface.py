@@ -29,9 +29,9 @@ COMMANDS = sorted(row[1] for row in cli_surface.table_rows(TABLE, "walictl") if 
 # override, if any.
 RAW_COMMANDS = tomllib.loads(TABLE.read_text())["cli"]["walictl"]["commands"]
 
-# "variant" and "phone" are group headers: required subparsers make them un-runnable on
+# "variant", "phone", and "config" are group headers: required subparsers make them un-runnable on
 # their own (always a usage error), so the output-mode rule never applies to them directly.
-NON_LEAF_COMMANDS = {("variant",), ("phone",)}
+NON_LEAF_COMMANDS = {("variant",), ("phone",), ("config",)}
 
 # Commands that unconditionally reach the Noctalia daemon (current, edit, hide, neighbors,
 # and everything routed through navigate(): next/previous/random/earlier/later/observe) or
@@ -129,8 +129,10 @@ def test_completion_callback_and_scripts(env, tmp_path):  # noqa: F811 (env is t
         assert out.returncode == 0
         return [line.split("\t")[0] for line in out.stdout.splitlines()]
     root = candidates(["walictl", ""], 1)
-    for name in ("current", "favorites", "next", "random", "variant", "phone", "help"):
+    for name in ("current", "favorites", "next", "random", "variant", "phone", "config", "help"):
         assert name in root
+    assert "show" in candidates(["walictl", "config", ""], 2)
+    assert "--json" in candidates(["walictl", "config", "show", "--"], 3)
     assert "show" in candidates(["walictl", "variant", ""], 2)
     assert "--limit" in candidates(["walictl", "neighbors", "--"], 2)
     zsh = tmp_path / "_walictl"
@@ -186,6 +188,7 @@ def _setup_import_source(env, tmp_path):  # noqa: F811 (env is the imported fixt
 
 
 OUTPUT_MODE_CASES = [
+    (("config", "show"), ["config", "show"], _no_setup),
     (("favorites",), ["favorites"], _no_setup),
     (("hidden",), ["hidden"], _no_setup),
     (("favorite",), ["favorite", "PXL_20210608_111152739"], _no_setup),
@@ -206,3 +209,13 @@ def test_output_json_for_every_command_without_an_output_override(path, argv, se
     out = run(*argv, "--json")
     assert out.returncode == 0, (path, out.stderr)
     json.loads(out.stdout)  # exactly one JSON value: raises on anything else (or nothing)
+
+
+def test_config_output_mode_precedence(env):  # noqa: F811 (env is the imported fixture)
+    for argv in (["--json", "config", "show"], ["config", "--json", "show"], ["config", "show", "--json"]):
+        assert json.loads(run(*argv).stdout) == {"wallpaper_dir": str(env["wallpapers"]), "archive_root": str(env["archive"])}
+    assert isinstance(json.loads(run("config", "show", extra={"WALICTL_FORMAT": "json"}).stdout), dict)
+    pretty = run("config", "show", "--pretty", extra={"WALICTL_FORMAT": "json"})
+    assert pretty.returncode == 0 and pretty.stdout.startswith("wallpaper_dir: ")
+    assert run("--json", "config", "show", "--pretty").returncode == 2
+    assert run("config").returncode == 2

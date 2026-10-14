@@ -105,25 +105,143 @@ for orientation in RightTop LeftBottom LeftTop RightBottom; do
     fail "$orientation must swap the stored size"
 done
 
-# Ingest judges portrait by the displayed size: a sensor-landscape photo
-# tagged RightTop is a portrait and prompts; [u]pright keeps it upright.
-mkdir -p "${tmp}/ingest/archive/2021/06" "${tmp}/ingest/wali/3440"
-touch "${tmp}/ingest/archive/2021/06/PXL_20210622_004806837.jpg"
+# All config and image operations use scratch paths, including favorite writes.
+export XDG_CONFIG_HOME="${tmp}/config"
+export XDG_STATE_HOME="${tmp}/state"
+export XDG_CACHE_HOME="${tmp}/cache"
+export FD_ARGS_FILE="${tmp}/fd.args" GIMP_ARGS_FILE="${tmp}/gimp.args"
+export ACTION_LOG="${tmp}/actions"
+wallpapers="${tmp}/library ; \$(touch PWNED)"
+archive="${tmp}/archive [originals]"
+photo=PXL_20210622_004806837
+mkdir -p "$wallpapers" "$archive/2021/06" "$XDG_CONFIG_HOME/wali"
+touch "$archive/2021/06/$photo.jpg"
+
+write_config() {
+  python3 - "$XDG_CONFIG_HOME/wali/config.toml" "$wallpapers" "${1:-$archive}" <<'PYCONFIG'
+import json, sys
+from pathlib import Path
+config, wallpaper, archive = sys.argv[1:]
+text = f"wallpaper_dir = {json.dumps(wallpaper)}\nfavorites_file = {json.dumps(str(Path(config).parent / 'favorites.json'))}\n"
+if archive != "absent":
+    text += f"archive_root = {json.dumps(archive)}\n"
+Path(config).write_text(text)
+PYCONFIG
+}
+
+walictl() {
+  if [[ "$1" == config ]]; then
+    case "${WALICTL_TEST_FAILURE:-}" in
+      command) print -u2 -- 'config command failed'; return 7 ;;
+      json) print -r -- 'not json'; return ;;
+      fields) print -r -- '{"wallpaper_dir": 3, "archive_root": null}'; return ;;
+    esac
+  else
+    print -r -- "$*" >> "$ACTION_LOG"
+  fi
+  "$repo_root/bin/walictl" "$@"
+}
+
+cat > "${tmp}/bin/fd" <<'EOF'
+#!/usr/bin/env zsh
+printf '%s\0' "$@" > "$FD_ARGS_FILE"
+print -r -- "$2/PXL_20210622_004806837.jpg"
+EOF
+cat > "${tmp}/bin/fzf" <<'EOF'
+#!/usr/bin/env zsh
+cat
+EOF
+chmod +x "${tmp}/bin/fd" "${tmp}/bin/fzf"
+function /bin/gimp {
+  printf '%s\0' "$@" > "$GIMP_ARGS_FILE"
+}
+
+# Ingest judges portrait by its displayed size, using the final directory.
+unset WALI_DIR BACKGROUND_IMG_DIR
+write_config
 rm -f "$MAGICK_ARGS_FILE"
-print u | IDENTIFY_SIZE='3840 2160 RightTop' BACKGROUND_IMG_DIR="${tmp}/ingest/archive" \
-  WALI_DIR="${tmp}/ingest/wali" wali_ingest > "${tmp}/ingest.out" 2>&1
+print u | IDENTIFY_SIZE='3840 2160 RightTop' wali_ingest > "${tmp}/ingest.out" 2>&1
 rg -q -F '[r]otate / [u]pright / [s]kip?' "${tmp}/ingest.out" || fail 'a tagged portrait must prompt'
 read_magick_args
-[[ "${args[*]}" == "${tmp}/ingest/archive/2021/06/PXL_20210622_004806837.jpg -auto-orient -resize 3440x -quality 90 ${tmp}/ingest/wali/3440/PXL_20210622_004806837.jpg" ]] || \
-  fail "[u]pright must ingest upright: ${args[*]}"
+[[ "${args[*]}" == "$archive/2021/06/$photo.jpg -auto-orient -resize 3440x -quality 90 $wallpapers/$photo.jpg" ]] || \
+  fail "[u]pright must ingest into the configured library: ${args[*]}"
 
-# A landscape as displayed is ingested without a prompt.
+# A config changed after sourcing takes effect; conflicting old vars are ignored.
+export WALI_DIR="${tmp}/wrong-library" BACKGROUND_IMG_DIR="${tmp}/wrong-archive"
+wallpapers="${tmp}/other library"
+mkdir -p "$wallpapers"
+write_config
 rm -f "$MAGICK_ARGS_FILE"
-print -n | IDENTIFY_SIZE='2160 3840 LeftBottom' BACKGROUND_IMG_DIR="${tmp}/ingest/archive" \
-  WALI_DIR="${tmp}/ingest/other" wali_ingest > "${tmp}/ingest.out" 2>&1
+print -n | IDENTIFY_SIZE='2160 3840 LeftBottom' wali_ingest > "${tmp}/ingest.out" 2>&1
 ! rg -q -F '[s]kip?' "${tmp}/ingest.out" || fail 'a landscape as displayed must not prompt'
 read_magick_args
+[[ "${args[-1]}" == "$wallpapers/$photo.jpg" ]] || fail 'ingest cached an old config'
 [[ "${args[2]}" == -auto-orient && "${args[3]}" == -resize ]] || fail "a landscape must ingest upright: ${args[*]}"
+
+for old_vars in unset conflicting; do
+  if [[ "$old_vars" == unset ]]; then
+    unset WALI_DIR BACKGROUND_IMG_DIR
+  else
+    export WALI_DIR="${tmp}/wrong-library" BACKGROUND_IMG_DIR="${tmp}/wrong-archive"
+  fi
+  wallpapers="${tmp}/library ; \$(touch PWNED)"
+  write_config absent
+  touch "$wallpapers/$photo.jpg"
+  # Reprocessing uses its explicit source, with no archive_root required.
+  rm -f "$MAGICK_ARGS_FILE"
+  print u | IDENTIFY_SIZE='2160 3840 TopLeft' wali_reprocess "$archive" >/dev/null 2>&1
+  read_magick_args
+  [[ "${args[1]}" == "$archive/2021/06/$photo.jpg" && "${args[-1]}" == "$wallpapers/$photo.jpg" ]] || \
+    fail 'reprocess lost the explicit source or configured target'
+  touch "$wallpapers/$photo.jpg"
+  wali_search "$photo"
+  args=()
+  while IFS= read -r -d $'\0' arg; do args+=("$arg"); done < "$FD_ARGS_FILE"
+  [[ "${args[2]}" == "$wallpapers" ]] || fail 'search lost the configured directory boundary'
+  python3 - "$XDG_CONFIG_HOME/wali/favorites.json" "$photo" <<'PYFAVORITE'
+import json, sys
+assert sys.argv[2] in json.load(open(sys.argv[1]))["favorites"]
+PYFAVORITE
+  wali_edit_search "$photo" >/dev/null
+  args=()
+  while IFS= read -r -d $'\0' arg; do args+=("$arg"); done < "$GIMP_ARGS_FILE"
+  [[ "${args[1]}" == "$wallpapers/$photo.jpg" && ${#args} == 1 ]] || fail 'edit-search lost the image boundary'
+done
+[[ ! -e "$tmp/PWNED" ]] || fail 'configured path executed shell syntax'
+
+assert_no_actions() {
+  [[ ! -e "$MAGICK_ARGS_FILE" && ! -e "$FD_ARGS_FILE" && ! -e "$GIMP_ARGS_FILE" && ! -e "$ACTION_LOG" ]] || \
+    fail 'config failure reached processing, search, favorite or GIMP'
+  ! rg -q -F '[s]kip?' "$tmp/failure.out" || fail 'config failure prompted'
+}
+
+for invalid in missing toml type command json fields; do
+  write_config
+  unset WALICTL_TEST_FAILURE
+  case "$invalid" in
+    missing) rm "$XDG_CONFIG_HOME/wali/config.toml" ;;
+    toml) print -r -- '[' > "$XDG_CONFIG_HOME/wali/config.toml" ;;
+    type) print -r -- 'wallpaper_dir = 3\nfavorites_file = "~/f"' > "$XDG_CONFIG_HOME/wali/config.toml" ;;
+    *) export WALICTL_TEST_FAILURE="$invalid" ;;
+  esac
+  for consumer in wali_ingest wali_reprocess wali_search wali_edit_search; do
+    rm -f "$MAGICK_ARGS_FILE" "$FD_ARGS_FILE" "$GIMP_ARGS_FILE" "$ACTION_LOG"
+    if "$consumer" "$archive" > "$tmp/failure.out" 2>&1; then
+      fail "$consumer accepted $invalid config"
+    fi
+    [[ -s "$tmp/failure.out" ]] || fail "$consumer failed silently"
+    assert_no_actions
+  done
+done
+unset WALICTL_TEST_FAILURE
+
+for invalid_archive in absent "$tmp/nonexistent" "$source_path"; do
+  write_config "$invalid_archive"
+  rm -f "$MAGICK_ARGS_FILE" "$FD_ARGS_FILE" "$GIMP_ARGS_FILE" "$ACTION_LOG"
+  if wali_ingest > "$tmp/failure.out" 2>&1; then fail 'ingest accepted an unavailable archive'; fi
+  rg -q 'archive_root' "$tmp/failure.out" || fail 'ingest must explain the archive config failure'
+  assert_no_actions
+done
 
 mkdir -p "${tmp}/home"
 export NOCTALIA_LOG="${tmp}/noctalia.log"

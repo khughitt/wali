@@ -1063,6 +1063,15 @@ def describe_pretty(payload: dict[str, object]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def cmd_config(ctx: Context, args: argparse.Namespace) -> int:
+    payload = {
+        "wallpaper_dir": str(ctx.config.wallpaper_dir),
+        "archive_root": str(ctx.config.archive_root) if ctx.config.archive_root is not None else None,
+    }
+    emit(ctx, payload, f"wallpaper_dir: {payload['wallpaper_dir']}\narchive_root: {payload['archive_root']}\n")
+    return 0
+
+
 def cmd_current(ctx: Context, args: argparse.Namespace) -> int:
     displayed = ctx.noctalia.get_default()
     library = scan_library(ctx.config.wallpaper_dir)
@@ -1606,6 +1615,7 @@ def cmd_variant(ctx: Context, args: argparse.Namespace) -> int:
 
 
 COMMANDS: dict[str, Callable[[Context, argparse.Namespace], int]] = {
+    "config": cmd_config,
     "current": cmd_current,
     "edit": cmd_edit,
     "favorite": cmd_favorite,
@@ -1641,6 +1651,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="walictl", parents=[globals_])
     parser.add_argument("-V", "--version", action="version", version=f"walictl {VERSION}")
     subparsers = parser.add_subparsers(dest="command", required=True, metavar="<command>")
+    config = subparsers.add_parser("config", parents=[globals_], help="the configured wallpaper and archive directories")
+    config_sub = config.add_subparsers(dest="config_command", required=True, metavar="<command>")
+    config_sub.add_parser("show", parents=[globals_], help="show the resolved wallpaper and archive directories")
     subparsers.add_parser("current", parents=[globals_], help="describe the default wallpaper")
     subparsers.add_parser("edit", parents=[globals_], help="open the original (or the display file) in GIMP")
     favorite = subparsers.add_parser("favorite", parents=[globals_], help="toggle (or --add/--remove) a favorite")
