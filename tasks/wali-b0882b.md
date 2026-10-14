@@ -8,7 +8,7 @@ complexity: mid
 process: direct
 owner: wali-b0882b
 created: 2026-09-12T09:35:40Z
-updated: 2026-10-14T10:40:40Z
+updated: 2026-10-14T10:41:20Z
 started: 2026-10-14T10:31:05Z
 depends: []
 tags: [wallpaper]
@@ -35,3 +35,4 @@ Historical correction: 6f09934 removed wali_rotate and the baked-crop modes; the
 - 2026-10-14T10:37:03Z (wali-b0882b): Implemented two-field read-only config show and invocation-time shared JSON reader for all four helpers; scratch tests proved new CLI RED, then CLI GREEN. Shell regression caught a portrait fixture with landscape dimensions; corrected fixture. Ops inventory prerequisite approved by user and delegated; feedback ops-2dfb52 records missing vendored PATH entry.
 - 2026-10-14T10:38:16Z (wali-b0882b): Verification before inventory adoption: just verify with test_surface_equals_table deselected passed 257 Python tests, all shell scratch tests and plugin Lua tests; ruff and tasks check clean. Whole-change read-only reviewer dispatched; unfiltered just verify follows ops adoption.
 - 2026-10-14T10:40:40Z (wali-b0882b): review: impl round 1 — verdict: accept; findings: none; reviewer: codex
+- 2026-10-14T10:41:20Z (wali-b0882b): Adopted cli.toml and its paired cli_surface.py via ops bin/vendored from landed 6b007593911549afa031dc7eaeb6308f733f1529 (ops-dff965). Adoption necessarily refreshes accumulated shared inventory rows; walictl runtime helper changes only provenance comments. Unfiltered just verify passed: 260 Python tests plus shell and Lua plugin; lint/tasks check clean. Whole-change review accepted with no findings; scoped adoption review dispatched.
