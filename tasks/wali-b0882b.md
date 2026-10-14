@@ -8,7 +8,7 @@ complexity: mid
 process: direct
 owner: wali-b0882b
 created: 2026-09-12T09:35:40Z
-updated: 2026-10-14T10:31:25Z
+updated: 2026-10-14T10:37:03Z
 started: 2026-10-14T10:31:05Z
 depends: []
 tags: [wallpaper]
@@ -32,3 +32,4 @@ Historical correction: 6f09934 removed wali_rotate and the baked-crop modes; the
   provenance: {"harness_session":"codex:01a139f6-7fcf-7b41-95c2-c0279fb2e672","harness_session_source":"CODEX_THREAD_ID"}
 - 2026-10-14T10:31:25Z (wali-b0882b): resumed
   provenance: {"harness_session":"codex:01a139f6-7fcf-7b41-95c2-c0279fb2e672","harness_session_source":"CODEX_THREAD_ID"}
+- 2026-10-14T10:37:03Z (wali-b0882b): Implemented two-field read-only config show and invocation-time shared JSON reader for all four helpers; scratch tests proved new CLI RED, then CLI GREEN. Shell regression caught a portrait fixture with landscape dimensions; corrected fixture. Ops inventory prerequisite approved by user and delegated; feedback ops-2dfb52 records missing vendored PATH entry.
