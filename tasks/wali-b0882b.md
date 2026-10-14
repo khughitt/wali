@@ -8,7 +8,7 @@ complexity: mid
 process: direct
 owner: wali-b0882b
 created: 2026-09-12T09:35:40Z
-updated: 2026-10-14T10:41:54Z
+updated: 2026-10-14T10:41:55Z
 started: 2026-10-14T10:31:05Z
 depends: []
 tags: [wallpaper]
@@ -37,3 +37,4 @@ Historical correction: 6f09934 removed wali_rotate and the baked-crop modes; the
 - 2026-10-14T10:40:40Z (wali-b0882b): review: impl round 1 — verdict: accept; findings: none; reviewer: codex
 - 2026-10-14T10:41:20Z (wali-b0882b): Adopted cli.toml and its paired cli_surface.py via ops bin/vendored from landed 6b007593911549afa031dc7eaeb6308f733f1529 (ops-dff965). Adoption necessarily refreshes accumulated shared inventory rows; walictl runtime helper changes only provenance comments. Unfiltered just verify passed: 260 Python tests plus shell and Lua plugin; lint/tasks check clean. Whole-change review accepted with no findings; scoped adoption review dispatched.
 - 2026-10-14T10:41:54Z (wali-b0882b): review: impl round 2 — verdict: accept; findings: none; reviewer: codex
+- 2026-10-14T10:41:55Z (wali-b0882b): attached: final-review-report.md (2812 bytes): Read-only whole-change review: accepted, no findings; controller ruling included
