@@ -1,4 +1,5 @@
 prefix = "wali"
+color = "#b780ad"
 
 [git]
 commit = true
