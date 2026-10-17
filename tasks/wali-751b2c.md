@@ -5,8 +5,8 @@ status: idea
 priority: 2
 reviewed: true
 created: 2026-09-16T23:55:39Z
-updated: 2026-10-12T18:22:34Z
-depends: []
+updated: 2026-10-17T13:03:23Z
+depends: [wali-ae2aa9]
 parent: wali-9a738d
 tags: [noctalia]
 agent: crush
