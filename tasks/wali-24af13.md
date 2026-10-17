@@ -5,8 +5,8 @@ status: idea
 priority: 2
 reviewed: true
 created: 2026-09-12T09:35:41Z
-updated: 2026-10-12T18:22:34Z
-depends: []
+updated: 2026-10-17T13:03:22Z
+depends: [wali-864e2b]
 parent: wali-9a738d
 tags: [noctalia, wallpaper]
 source: dots-b3e5ae
