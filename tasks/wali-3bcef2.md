@@ -7,8 +7,8 @@ size: s
 complexity: mid
 reviewed: true
 created: 2026-09-12T09:35:40Z
-updated: 2026-10-12T18:22:34Z
-depends: []
+updated: 2026-10-17T13:03:22Z
+depends: [wali-51e601, wali-75ab89]
 parent: wali-9a738d
 tags: [quick-add, noctalia, wallpaper]
 source: dots-b9ba7c
